@@ -1,0 +1,14 @@
+# Default owners for the entire repository
+* @your-username @team-lead
+
+# Data directory owners
+/data/ @data-team
+
+# Model directory owners
+/models/ @ml-team
+
+# Source code owners
+/src/ @dev-team
+
+# Documentation owners
+/docs/ @docs-team

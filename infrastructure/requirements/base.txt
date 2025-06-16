@@ -1,0 +1,8 @@
+pandas>=1.3.0,<3.0.0
+numpy>=1.21.0,<2.0.0
+scikit-learn>=1.0.0,<1.4.0
+statsmodels>=0.13.0,<1.0.0
+joblib>=1.0.0,<2.0.0
+dvc>=2.0.0,<4.0.0 # For data versioning if used in CI/CD or local dev
+openpyxl>=3.0.0,<4.0.0 # For .xlsx support
+xlrd>=2.0.1,<3.0.0 # For .xls support
