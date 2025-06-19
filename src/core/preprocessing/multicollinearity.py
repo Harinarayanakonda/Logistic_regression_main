@@ -326,6 +326,8 @@ class MulticollinearityReducer:
         if not self.is_fitted_:
             raise NotFittedError("This MulticollinearityReducer instance is not fitted yet.")
         return self.eliminated_features_.copy()
+    def get_selected_features(self):
+        return self.selected_features_
     
     def get_vif_history(self) -> List[Dict[str, float]]:
         """

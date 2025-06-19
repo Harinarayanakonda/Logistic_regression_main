@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.preprocessing import PowerTransformer, QuantileTransformer
 from typing import List, Optional, Dict, Union, Any
 import logging
 from scipy import stats
@@ -8,11 +9,22 @@ import traceback
 import warnings
 from dataclasses import dataclass
 from enum import Enum, auto
+from scipy.stats.mstats import winsorize
 
 class TransformationMethod(Enum):
     LOG = auto()
     BOX_COX = auto()
     YEO_JOHNSON = auto()
+    SQRT = auto()
+    CBRT = auto()
+    INVERSE = auto()
+    POWER = auto()
+    WINSORIZING = auto()
+    CLIPPING = auto()
+    CONSTANT_ADDITION = auto()
+    BINNING = auto()
+    QUANTILE = auto()
+    ZSCORE = auto()
 
 class ZeroHandling(Enum):
     OFFSET = auto()
@@ -28,94 +40,43 @@ class TransformationResult:
     skewness_report: Optional[pd.DataFrame] = None
 
 class LogTransformer(BaseEstimator, TransformerMixin):
-    """
-    Production-ready numeric feature transformer with comprehensive error handling,
-    logging, and validation. Supports log, Box-Cox, and Yeo-Johnson transformations.
-    
-    Features:
-    - Strict input validation
-    - Comprehensive logging
-    - Detailed error handling
-    - Skewness analysis
-    - Multiple zero-handling strategies
-    - Memory efficiency
-    - Thread safety considerations
-    - Type hints for better IDE support
-    
-    Example Usage:
-    --------------
-    >>> transformer = LogTransformer(
-    ...     method='box-cox',
-    ...     columns=['age', 'income'],
-    ...     handle_zeros='offset',
-    ...     offset=1.0,
-    ...     min_skew_threshold=0.5
-    ... )
-    >>> transformed_data = transformer.fit_transform(df)
-    """
-    
     def __init__(self, 
                  method: str = "log", 
                  columns: Optional[List[str]] = None, 
                  handle_zeros: str = "offset", 
                  offset: float = 1.0,
                  min_skew_threshold: float = 0.5,
-                 verbose: bool = False):
-        """
-        Initialize the transformer with validation.
-        
-        Args:
-            method: Transformation method ('log', 'box-cox', 'yeo-johnson')
-            columns: Specific columns to transform (None for all numeric)
-            handle_zeros: How to handle zeros/negatives ('offset', 'ignore', or 'drop')
-            offset: Value added to avoid log(0) or box-cox failure
-            min_skew_threshold: Minimum absolute skewness to consider transformation
-            verbose: Whether to enable verbose logging
-            
-        Raises:
-            ValueError: If invalid parameters are provided
-        """
+                 verbose: bool = False,
+                 power_value: float = 2.0):
         self._validate_init_params(method, handle_zeros, offset, min_skew_threshold)
-        
         self.method = method.lower()
         self.columns = columns
         self.handle_zeros = handle_zeros.lower()
         self.offset = offset
         self.min_skew_threshold = min_skew_threshold
         self.verbose = verbose
-        
-        # Internal state
+        self.power_value = power_value
         self.lambdas_: Dict[str, Optional[float]] = {} 
         self.fitted_columns_: List[str] = []
         self.skewness_: Optional[pd.Series] = None
         self._is_fitted: bool = False
         self._logger = self._initialize_logger()
-        
-    def _validate_init_params(self, 
-                            method: str, 
-                            handle_zeros: str,
-                            offset: float,
-                            min_skew_threshold: float) -> None:
-        """Validate all initialization parameters."""
-        valid_methods = ['log', 'box-cox', 'yeo-johnson']
-        if method.lower() not in valid_methods:
-            raise ValueError(f"Method must be one of {valid_methods}, got {method}")
-        
-        valid_zero_handling = ['offset', 'ignore', 'drop']
-        if handle_zeros.lower() not in valid_zero_handling:
-            raise ValueError(f"handle_zeros must be one of {valid_zero_handling}, got {handle_zeros}")
-            
-        if offset < 0:
-            raise ValueError(f"Offset must be >= 0, got {offset}")
-            
-        if min_skew_threshold < 0:
-            raise ValueError(f"min_skew_threshold must be >= 0, got {min_skew_threshold}")
 
+    def _validate_input_data(self, X: Any) -> pd.DataFrame:
+        if not isinstance(X, (pd.DataFrame, pd.Series, np.ndarray)):
+            raise TypeError("Input must be pandas DataFrame, Series, or numpy array")
+
+        if isinstance(X, (pd.Series, np.ndarray)):
+            X = pd.DataFrame(X)
+
+        if X.empty:
+            raise ValueError("Input data is empty")
+
+        return X.copy()
     def _initialize_logger(self) -> logging.Logger:
-        """Initialize and configure logger."""
         logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         logger.setLevel(logging.DEBUG if self.verbose else logging.INFO)
-        
+
         if not logger.handlers:
             handler = logging.StreamHandler()
             formatter = logging.Formatter(
@@ -123,22 +84,70 @@ class LogTransformer(BaseEstimator, TransformerMixin):
             )
             handler.setFormatter(formatter)
             logger.addHandler(handler)
-            
+
         logger.info("LogTransformer initialized with method: %s", self.method)
         return logger
 
-    def _validate_input_data(self, X: Any) -> pd.DataFrame:
-        """Validate input data and convert to DataFrame if needed."""
-        if not isinstance(X, (pd.DataFrame, pd.Series, np.ndarray)):
-            raise TypeError("Input must be pandas DataFrame, Series, or numpy array")
-            
-        if isinstance(X, (pd.Series, np.ndarray)):
-            X = pd.DataFrame(X)
-            
-        if X.empty:
-            raise ValueError("Input data is empty")
-            
-        return X.copy()
+    # ... rest of class unchanged (already provided) ...
+
+
+    def _validate_init_params(self, method: str, handle_zeros: str, offset: float, min_skew_threshold: float) -> None:
+        valid_methods = [m.name.lower() for m in TransformationMethod]
+        if method.lower() not in valid_methods:
+            raise ValueError(f"Method must be one of {valid_methods}, got {method}")
+
+        valid_zero_handling = [z.name.lower() for z in ZeroHandling]
+        if handle_zeros.lower() not in valid_zero_handling:
+            raise ValueError(f"handle_zeros must be one of {valid_zero_handling}, got {handle_zeros}")
+
+        if offset < 0:
+            raise ValueError(f"Offset must be >= 0, got {offset}")
+
+        if min_skew_threshold < 0:
+            raise ValueError(f"min_skew_threshold must be >= 0, got {min_skew_threshold}")
+
+    def _apply_transformation(self, data: pd.Series, col: str) -> Optional[pd.Series]:
+        try:
+            if self.method == 'log':
+                if self.handle_zeros == 'offset':
+                    data = data + self.offset
+                return np.log(data)
+            elif self.method == 'box-cox':
+                data = self._handle_non_positive(data, col)
+                if data is None:
+                    return None
+                transformed, lmbda = stats.boxcox(data)
+                self.lambdas_[col] = lmbda
+                return transformed
+            elif self.method == 'yeo-johnson':
+                transformed, lmbda = stats.yeojohnson(data)
+                self.lambdas_[col] = lmbda
+                return transformed
+            elif self.method == 'square-root':
+                return np.sqrt(data)
+            elif self.method == 'cube-root':
+                return np.cbrt(data)
+            elif self.method == 'inverse':
+                return 1 / (data + self.offset)
+            elif self.method == 'power':
+                return np.power(data, self.power_value)
+            elif self.method == 'winsorizing':
+                return winsorize(data, limits=[0.01, 0.01])
+            elif self.method == 'clipping':
+                return np.clip(data, data.quantile(0.01), data.quantile(0.99))
+            elif self.method == 'constant-addition':
+                return data + self.offset
+            elif self.method == 'data-binning':
+                return pd.qcut(data, q=4, labels=False, duplicates='drop')
+            elif self.method == 'quantile-transform':
+                qt = QuantileTransformer(output_distribution="normal")
+                return qt.fit_transform(data.values.reshape(-1, 1)).flatten()
+            elif self.method == 'z-score':
+                return (data - data.mean()) / data.std()
+        except Exception as e:
+            self._logger.error("Error transforming column %s: %s", col, str(e))
+            return None
+
 
     def _select_numeric_columns(self, X: pd.DataFrame) -> pd.DataFrame:
         """Select numeric columns for transformation."""

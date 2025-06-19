@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 class MissingValueHandler:
     """
     Enhanced missing value handler with multiple imputation strategies.
+    Ensures only one missing flag is created per feature.
     """
 
     def __init__(self,
@@ -20,9 +21,6 @@ class MissingValueHandler:
                  add_missing_flag: bool = True,
                  knn_neighbors: int = 5,
                  drop_high_missing_threshold: float = 0.4):
-        """
-        Initialize the missing value handler.
-        """
         if not 0 <= drop_high_missing_threshold <= 1:
             raise ValueError("Threshold must be between 0 and 1")
 
@@ -32,7 +30,6 @@ class MissingValueHandler:
         self.knn_neighbors = knn_neighbors
         self.drop_high_missing_threshold = drop_high_missing_threshold
 
-        # Initialize all attributes
         self.numeric_imputer_ = None
         self.categorical_imputer_ = None
         self.numeric_cols_ = []
@@ -46,36 +43,21 @@ class MissingValueHandler:
         logger.info("MissingValueHandler initialized")
 
     def _get_high_missing_cols_to_drop(self, X: pd.DataFrame) -> List[str]:
-        """
-        Identify columns with missing value percentage above the threshold.
-        """
         missing_ratio = X.isnull().mean()
         high_missing_cols = missing_ratio[missing_ratio >= self.drop_high_missing_threshold].index.tolist()
-
-        # Include columns that are entirely NaN
         all_nan_cols = X.columns[X.isnull().all()].tolist()
         for col in all_nan_cols:
             if col not in high_missing_cols:
                 high_missing_cols.append(col)
-
         return high_missing_cols
 
     def _identify_columns(self, X: pd.DataFrame):
-        """Identify numeric and categorical columns."""
         self.numeric_cols_ = X.select_dtypes(include=np.number).columns.tolist()
-        self.categorical_cols_ = X.select_dtypes(
-            include=['object', 'category', 'bool']
-        ).columns.tolist()
-        
-        # Ensure no overlap
-        self.categorical_cols_ = [
-            col for col in self.categorical_cols_
-            if col not in self.numeric_cols_
-        ]
+        self.categorical_cols_ = X.select_dtypes(include=['object', 'category', 'bool']).columns.tolist()
+        self.categorical_cols_ = [col for col in self.categorical_cols_ if col not in self.numeric_cols_]
 
     def _store_imputation_parameters(self, col_type: str, cols_used: List[str], imputer):
-        """Store learned imputation values."""
-        if hasattr(imputer, 'statistics_'):  # SimpleImputer
+        if hasattr(imputer, 'statistics_'):
             for i, col in enumerate(cols_used):
                 self.imputation_values_[col] = imputer.statistics_[i]
         elif col_type == 'numeric' and self.numeric_strategy == 'knn':
@@ -84,10 +66,7 @@ class MissingValueHandler:
             logger.warning(f"Could not store imputation values for {col_type}")
 
     def fit(self, X: pd.DataFrame) -> 'MissingValueHandler':
-        """Learn imputation parameters from data."""
         self.imputation_log.append("Starting missing value handling process")
-        
-        # Handle high missing columns
         self.dropped_columns_ = self._get_high_missing_cols_to_drop(X)
         if self.dropped_columns_:
             self.imputation_log.append(f"Dropping columns with >{self.drop_high_missing_threshold*100}% missing: {self.dropped_columns_}")
@@ -95,7 +74,6 @@ class MissingValueHandler:
         X_for_fit = X.drop(columns=self.dropped_columns_, errors='ignore')
         self._identify_columns(X_for_fit)
 
-        # Fit numeric imputer
         if self.numeric_cols_:
             cols_with_nans = [col for col in self.numeric_cols_ if X_for_fit[col].isnull().any()]
             if cols_with_nans:
@@ -105,11 +83,9 @@ class MissingValueHandler:
                 else:
                     self.numeric_imputer_ = SimpleImputer(strategy=self.numeric_strategy)
                     self.imputation_log.append(f"Using {self.numeric_strategy} imputation for numeric columns")
-                
                 self.numeric_imputer_.fit(X_for_fit[cols_with_nans])
                 self._store_imputation_parameters('numeric', cols_with_nans, self.numeric_imputer_)
 
-        # Fit categorical imputer
         if self.categorical_cols_:
             cols_with_nans = [col for col in self.categorical_cols_ if X_for_fit[col].isnull().any()]
             if cols_with_nans:
@@ -122,50 +98,41 @@ class MissingValueHandler:
         return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
-        """Apply imputation to data."""
         X_copy = X.copy()
         self.imputed_counts_ = {}
         self.imputation_log.append("Starting transformation")
 
-        # Store original missingness
         relevant_cols = [col for col in X_copy.columns if col not in self.dropped_columns_]
         original_missing_flags = X_copy[relevant_cols].isna()
 
-        # Drop high missing columns
-        cols_to_drop = [col for col in self.dropped_columns_ if col in X_copy.columns]
-        if cols_to_drop:
-            X_copy = X_copy.drop(columns=cols_to_drop)
-            self.imputation_log.append(f"Dropped columns: {cols_to_drop}")
+        if self.dropped_columns_:
+            X_copy = X_copy.drop(columns=self.dropped_columns_)
+            self.imputation_log.append(f"Dropped columns: {self.dropped_columns_}")
 
-        # Numeric imputation
         numeric_cols_to_impute = [col for col in self.numeric_cols_ if col in X_copy.columns and X_copy[col].isnull().any()]
         if numeric_cols_to_impute and self.numeric_imputer_:
             before_counts = X_copy[numeric_cols_to_impute].isnull().sum()
             X_copy[numeric_cols_to_impute] = self.numeric_imputer_.transform(X_copy[numeric_cols_to_impute])
             after_counts = X_copy[numeric_cols_to_impute].isnull().sum()
-            
             for col in numeric_cols_to_impute:
                 self.imputed_counts_[col] = before_counts[col] - after_counts[col]
             self.imputation_log.append(f"Imputed {len(numeric_cols_to_impute)} numeric columns")
 
-        # Categorical imputation
         categorical_cols_to_impute = [col for col in self.categorical_cols_ if col in X_copy.columns and X_copy[col].isnull().any()]
         if categorical_cols_to_impute and self.categorical_imputer_:
             before_counts = X_copy[categorical_cols_to_impute].isnull().sum()
             X_copy[categorical_cols_to_impute] = self.categorical_imputer_.transform(X_copy[categorical_cols_to_impute])
             after_counts = X_copy[categorical_cols_to_impute].isnull().sum()
-            
             for col in categorical_cols_to_impute:
                 self.imputed_counts_[col] = before_counts[col] - after_counts[col]
             self.imputation_log.append(f"Imputed {len(categorical_cols_to_impute)} categorical columns")
 
-        # Add missing flags
+        # Add missing flags (ensure only one flag per original feature)
         if self.add_missing_flag:
             for col in original_missing_flags.columns:
                 if original_missing_flags[col].any():
                     flag_col = f"{col}_Missing_Flag"
-                    if flag_col not in X_copy.columns:
-                        X_copy[flag_col] = original_missing_flags[col].astype(int)
+                    X_copy[flag_col] = original_missing_flags[col].astype(int)
             self.imputation_log.append("Added missing value flags")
 
         remaining_nas = X_copy.isna().sum().sum()
@@ -175,8 +142,9 @@ class MissingValueHandler:
         return X_copy
 
     def fit_transform(self, X: pd.DataFrame) -> pd.DataFrame:
-        """Convenience method for fit and transform."""
         return self.fit(X).transform(X)
+
+    # Remaining methods unchanged (summary, log, save/load)...
 
     @property
     def imputation_summary(self) -> pd.DataFrame:

@@ -581,26 +581,47 @@ def main():
                 st.write(f"DataFrame Shape: {st.session_state['preprocessed_df'].shape}")
 
     # 3️⃣ Log Transformation
-    with st.expander(f"3️⃣ Apply Log Transformation {'✅' if st.session_state.preprocessing_steps_completed.get('log_transform', False) else '❌'}", expanded=False):
+    with st.expander(f"3️⃣ Distribution Corrections: Skewness & Kurtosis {'✅' if st.session_state.preprocessing_steps_completed.get('log_transform', False) else '❌'}", expanded=False):
+        
         st.write("""
-        Apply transformation to reduce skewness in numerical features:
-        - **Log**: Simple log transform (works only with positive values)
-        - **Box-Cox**: Power transform (requires positive values)
-        - **Yeo-Johnson**: Extended power transform (works with any values)
+        Apply transformation to reduce skewness or improve distribution characteristics:
+        - **Log**: Use for right-skewed data with only positive values
+        - **Square Root**: Best for count data or moderate skewness
+        - **Cube Root**: Handles both positive and negative values with moderate skewness
+        - **Inverse**: For high skewness dominated by large values
+        - **Box-Cox**: Power transform for strictly positive data
+        - **Yeo-Johnson**: Similar to Box-Cox but works with negatives
+        - **Power**: Flexible transformation with custom exponent
+        - **Winsorizing**: Cap extreme outliers to reduce skew
+        - **Clipping**: Similar to Winsorizing, but hard-limits values
+        - **Constant Addition**: Adds constant to enable log/box-cox on non-positive values
+        - **Data Binning**: Groups values into bins to reduce variability
+        - **Quantile Transform**: Maps to uniform or normal distribution
+        - **Z-Score**: Standardizes values (mean 0, std 1), mildly reduces skew
         """)
 
-        st.caption("""
-        Skewness measures asymmetry in data distribution.
-        Values between -0.5 and 0.5 are considered symmetrical.
-        Values beyond ±1 indicate high skewness that may benefit from transformation.
-        """)
 
         col1, col2 = st.columns(2)
 
         with col1:
             log_method = st.selectbox(
                 "Select Transformation Method",
-                options=["log", "box-cox", "yeo-johnson"],
+                options=[
+                    "log",
+                    "square-root",
+                    "cube-root",
+                    "inverse",
+                    "box-cox",
+                    "yeo-johnson",
+                    "power",
+                    "winsorizing",
+                    "clipping",
+                    "constant-addition",
+                    "data-binning",
+                    "quantile-transform",
+                    "z-score"
+                ],
+
                 index=0,
                 help="Choose the mathematical transformation method to apply"
             )
@@ -830,9 +851,18 @@ def main():
             st.warning("Original data snapshot missing. Please re-apply transformation to enable comparison.")
 
     # 4️⃣ Feature Scaling
-    with st.expander(f"4️⃣ Apply Feature Scaling {'✅' if st.session_state.preprocessing_steps_completed['scaling'] else '❌'}"):
-        st.write("Scale numerical features using StandardScaler (Z-score normalization) or MinMaxScaler.")
-        
+    with st.expander(f"4️⃣ Apply Feature Scaling {'✅' if st.session_state.preprocessing_steps_completed.get('scaling', False) else '❌'}", expanded=False):
+
+        st.markdown("""
+        ### 🎯 Why Scale Features?
+
+        Scaling helps models converge faster and improves performance, especially for algorithms sensitive to feature magnitudes (e.g., SVMs, KNNs, gradient-based methods).
+
+        **Choose the right scaler based on data distribution:**
+        - 🟦 **StandardScaler (Z-score)**: Use when features follow **normal distribution** and have **varying units** **(Data Standarization)**.
+        - 🟩 **MinMaxScaler**: Ideal when data doesn't follow normal distribution or contains **outliers** **(Data Normalization)**.
+        """)
+            
         scaler_type = st.radio(
             "Select Scaler Type:",
             ('StandardScaler', 'MinMaxScaler'),
@@ -980,198 +1010,261 @@ def main():
             st.write("**Data Preview after Encoding:**")
             st.dataframe(st.session_state.preprocessed_df.head(), use_container_width=True)
 
-    # 6️⃣ Multicollinearity Reduction
-    with st.expander(f"6️⃣ Reduce Multicollinearity {'✅' if st.session_state.preprocessing_steps_completed['multicollinearity'] else '❌'}"):
-        st.write("Identify and remove highly correlated numerical features to reduce multicollinearity.")
+    # ⬇️ Place this inside your Streamlit app where multicollinearity reduction is handled
 
-        # Parameter controls
-        col1, col2 = st.columns(2)
-        vif_threshold = col1.slider("VIF Threshold:", min_value=1.0, max_value=10.0, value=5.0, step=0.1)
+    # 6️⃣ Multicollinearity Reduction
+    with st.expander(f"6️⃣ Reduce Multicollinearity {'✅' if st.session_state.preprocessing_steps_completed['multicollinearity'] else '❌'}", expanded=False):
+        st.markdown("Identify and remove highly correlated numerical features to reduce multicollinearity. Choose between **VIF**-based filtering and optional **correlation-based** pruning.")
+
+        # ── Parameter controls ──
+        col1, col2 = st.columns([2, 2])
+        vif_threshold = col1.slider("VIF Threshold", 1.0, 10.0, value=5.0, step=0.1)
         use_correlation = col2.checkbox("Use Correlation Elimination", value=False)
 
         if use_correlation:
-            corr_threshold = st.slider("Correlation Threshold (absolute):", min_value=0.5, max_value=1.0, value=0.8, step=0.01)
+            corr_threshold = st.slider("Correlation Threshold (absolute)", 0.5, 1.0, value=0.8, step=0.01)
         else:
             corr_threshold = 0.8  # fallback
 
+        # 🚀 Apply button
         if st.button("🚀 Apply Multicollinearity Reduction", key="apply_multicollinearity"):
             st.session_state.data_snapshots['before_multicollinearity'] = st.session_state.preprocessed_df.copy()
 
-            with st.spinner("Applying multicollinearity reduction..."):
-                # Separate features and target
+            with st.spinner("Reducing multicollinearity..."):
                 df = st.session_state.preprocessed_df.copy()
                 target_col = st.session_state.get('selected_target', None)
-                
+
                 if target_col and target_col in df.columns:
                     features_df = df.drop(columns=[target_col])
                     target_df = df[[target_col]]
                 else:
                     features_df = df.copy()
                     target_df = pd.DataFrame(index=df.index)
-                
-                # Apply multicollinearity reduction to features only
+
+                # Initialize reducer
                 mc_reducer = MulticollinearityReducer(
                     vif_threshold=vif_threshold,
                     use_correlation=use_correlation,
-                    corr_threshold=corr_threshold
+                    corr_threshold=corr_threshold,
+                    handle_missing='drop',
+                    verbose=False
                 )
 
+                # Fit-transform
                 reduced_features_df = mc_reducer.fit_transform(features_df)
-                
-                # Recombine with target
-                if not target_df.empty:
-                    reduced_df = pd.concat([reduced_features_df, target_df], axis=1)
-                else:
-                    reduced_df = reduced_features_df
-                
+
+                # Combine with target if present
+                reduced_df = pd.concat([reduced_features_df, target_df], axis=1) if not target_df.empty else reduced_features_df
+
+                # Update state
                 st.session_state.preprocessed_df = reduced_df
                 st.session_state.fitted_preprocessing_components['multicollinearity_reducer'] = mc_reducer
                 st.session_state.preprocessing_steps_completed['multicollinearity'] = True
-                st.success("Multicollinearity reduction completed!")
-                logger.info("Multicollinearity reduction completed.")
 
-                if mc_reducer.get_eliminated_features():
-                    st.info(f"Dropped features: {', '.join(mc_reducer.get_eliminated_features())}")
+                st.success("✅ Multicollinearity reduction completed!")
+
+                # Show eliminated features
+                eliminated = mc_reducer.get_eliminated_features()
+                selected = mc_reducer.get_selected_features()
+
+                if eliminated:
+                    st.warning(f"🧹 Eliminated features due to multicollinearity ({len(eliminated)}):")
+                    st.code(", ".join(eliminated), language='text')
                 else:
-                    st.info("No features were dropped at the given thresholds.")
+                    st.info("✅ No features were eliminated at the selected thresholds.")
 
-                st.code(mc_reducer.summary())
+                # Show selected features
+                if selected:
+                    st.success(f"🎯 Selected features retained after reduction ({len(selected)}):")
+                    st.code(", ".join(selected), language='text')
 
-        # Display current preview
-        st.write("**Current Data Preview after Multicollinearity Reduction:**")
+                # Summary
+                with st.expander("🧾 Detailed Reduction Summary"):
+                    st.code(mc_reducer.summary(), language='text')
+
+        # Final preview
+        st.markdown("### 📊 Preview of Reduced Data")
         st.dataframe(st.session_state.preprocessed_df.head(), use_container_width=True)
 
- # 7️⃣ Feature Engineering
-    with st.expander(f"7️⃣ Feature Engineering {'✅' if st.session_state.preprocessing_steps_completed['feature_engineering'] else '❌'}"):
-        st.write("Perform advanced feature engineering steps like PCA, custom feature creation, and selection.")
 
-        # 7a. Feature Extraction (PCA)
+    # --- Feature Engineering Section ---
+    with st.expander(f"7️⃣ Feature Engineering {'✅' if st.session_state.preprocessing_steps_completed.get('feature_engineering', False) else '❌'}"):
+        st.write("Perform advanced feature engineering steps like PCA, custom feature creation, and selection to optimize your dataset for modeling.")
+
         st.subheader("7a. Feature Extraction (PCA)")
-        pca_n_components = st.number_input(
-            "Number of PCA Components (0 for automatic, 1 for min):",
-            min_value=0, value=2, step=1,
-            key="pca_n_components"
+        st.info("Reduce the dimensionality of your numeric data using Principal Component Analysis (PCA).")
+        
+        # Use a slider for better visual interaction for component selection
+        pca_n_components = st.slider(
+            "Number of PCA Components (0 for automatic, -1 for all, 1+ for specific):",
+            min_value=-1, # -1 for all components, 0 for auto, 1+ for specific
+            max_value=min(st.session_state.preprocessed_df.select_dtypes(include=np.number).shape[1], 10), # Max up to 10 for slider, adjust as needed
+            value=2,
+            step=1,
+            key="pca_n_components_slider", # Changed key for clarity
+            help="Set to 0 for automatic selection (explained variance), -1 to keep all components, or specify a number."
         )
-        apply_pca = st.button("🚀 Apply PCA", key="apply_pca")
+        
+        # Map slider value to actual n_components for PCA
+        n_components_for_pca = None
+        if pca_n_components == 0:
+            n_components_for_pca = None # For automatic variance explained
+        elif pca_n_components == -1:
+            n_components_for_pca = None # Keep all components (PCA's default behavior for None)
+        else:
+            n_components_for_pca = pca_n_components
 
-        # 7b. Feature Creation
+        apply_pca = st.button("🚀 Apply PCA", key="apply_pca_button")
+
         st.subheader("7b. Feature Creation")
-        st.write("Generate new features based on existing ones (e.g., sum, interactions).")
-        apply_feature_creation = st.button("🚀 Create Custom Features", key="apply_feature_creation")
+        st.info("Generate new features from existing numeric columns (e.g., sum, mean, product).")
+        apply_feature_creation = st.button("🚀 Create Custom Features", key="apply_feature_creation_button")
 
-        # 7c. Feature Selection
         st.subheader("7c. Feature Selection")
-        st.write("Select relevant features, potentially based on correlation with the target variable.")
+        st.info("Select the most relevant features to improve model performance and reduce noise.")
         
         selection_strategy = st.selectbox(
             "Selection Strategy",
             options=["univariate", "variance", "correlation"],
             index=0,
-            key="feature_selection_strategy"
+            key="feature_selection_strategy_select",
+            help="Choose a strategy: 'univariate' (statistical tests), 'variance' (low variance removal), 'correlation' (correlation with target)."
         )
-        selection_threshold = st.number_input(
-            "Selection Threshold",
-            min_value=0.0,
-            max_value=1.0,
-            value=0.1,
-            step=0.01,
-            key="feature_selection_threshold"
-        )
-        apply_feature_selection = st.button("🚀 Apply Feature Selection", key="apply_feature_selection")
+        
+        # Conditional input for threshold based on strategy
+        selection_threshold = None
+        if selection_strategy == "variance":
+            selection_threshold = st.number_input(
+                "Variance Threshold:",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.01, # A more common default for variance threshold
+                step=0.001,
+                format="%.3f",
+                key="variance_threshold_input",
+                help="Features with variance below this threshold will be removed."
+            )
+        elif selection_strategy == "correlation":
+            selection_threshold = st.number_input(
+                "Correlation Threshold (absolute value):",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.1,
+                step=0.01,
+                format="%.2f",
+                key="correlation_threshold_input",
+                help="Features with absolute correlation to the target below this threshold will be removed. Requires a target variable."
+            )
+        
+        apply_feature_selection = st.button("🚀 Apply Feature Selection", key="apply_feature_selection_button")
 
-        # ➕ Apply PCA
+        # --- Action Logic for Feature Engineering ---
         if apply_pca:
             st.session_state.data_snapshots['before_feature_engineering_extraction'] = st.session_state.preprocessed_df.copy()
             with st.spinner("Applying PCA for feature extraction..."):
                 numeric_df = st.session_state.preprocessed_df.select_dtypes(include=np.number)
 
                 if numeric_df.empty:
-                    st.error("No numeric columns found for PCA.")
+                    st.error("❌ No numeric columns found in your dataset for PCA. Please ensure your data has numeric features after previous steps.")
                 else:
-                    non_numeric_df = st.session_state.preprocessed_df.select_dtypes(exclude=np.number)
-                    pca_extractor = FeatureExtractor(n_components=pca_n_components if pca_n_components > 0 else None)
-                    pca_features_df = pca_extractor.fit_transform(numeric_df)
+                    try:
+                        non_numeric_df = st.session_state.preprocessed_df.select_dtypes(exclude=np.number)
+                        pca_extractor = FeatureExtractor(n_components=n_components_for_pca)
+                        pca_features_df = pca_extractor.fit_transform(numeric_df)
 
-                    st.session_state.preprocessed_df = pd.concat([pca_features_df, non_numeric_df], axis=1)
-                    st.session_state.fitted_preprocessing_components['pca_extractor'] = pca_extractor
-                    st.session_state.preprocessing_steps_completed['feature_engineering'] = False
-                    st.success(f"PCA applied! New features: {', '.join(pca_extractor.extracted_feature_names)}")
-                    logger.info("✅ PCA applied.")
+                        st.session_state.preprocessed_df = pd.concat([pca_features_df, non_numeric_df], axis=1)
+                        st.session_state.fitted_preprocessing_components['pca_extractor'] = pca_extractor
+                        st.session_state.preprocessing_steps_completed['feature_engineering'] = False # Mark as not fully complete until all steps are done or user confirms
+                        st.success(f"✅ PCA applied! {pca_features_df.shape[1]} new principal components created.")
+                        logger.info("✅ PCA applied.")
+                    except Exception as e:
+                        st.error(f"❌ PCA failed: {str(e)}")
+                        logger.error(f"PCA failed: {str(e)}\n{traceback.format_exc()}")
 
-        # ➕ Apply Feature Creation
         if apply_feature_creation:
             st.session_state.data_snapshots['before_feature_engineering_creation'] = st.session_state.preprocessed_df.copy()
             with st.spinner("Creating custom features..."):
-                feature_creator = FeatureCreator()
-                st.session_state.preprocessed_df, new_features = feature_creator.fit_transform(st.session_state.preprocessed_df)
+                try:
+                    feature_creator = FeatureCreator()
+                    # Assuming fit_transform in FeatureCreator now returns (transformed_df, new_features_list)
+                    st.session_state.preprocessed_df, new_features = feature_creator.fit_transform(st.session_state.preprocessed_df)
 
-                st.session_state.fitted_preprocessing_components['feature_creator'] = feature_creator
-                if new_features:
-                    st.session_state.preprocessing_steps_completed['feature_engineering'] = False
-                    st.success(f"✅ Custom features created: {', '.join(new_features)}")
-                    logger.info(f"New features: {new_features}")
-                else:
-                    st.info("No new custom features were created.")
+                    st.session_state.fitted_preprocessing_components['feature_creator'] = feature_creator
+                    if new_features:
+                        st.session_state.preprocessing_steps_completed['feature_engineering'] = False
+                        st.success(f"✅ Custom features created: {', '.join(new_features)}")
+                        logger.info(f"New features: {new_features}")
+                    else:
+                        st.info("ℹ️ No new custom features were created. This might happen if there are not enough suitable numeric columns.")
+                except Exception as e:
+                    st.error(f"❌ Feature creation failed: {str(e)}")
+                    logger.error(f"Feature creation failed: {str(e)}\n{traceback.format_exc()}")
 
-        # ➕ Apply Feature Selection
         if apply_feature_selection:
             st.session_state.data_snapshots['before_feature_engineering_selection'] = st.session_state.preprocessed_df.copy()
             with st.spinner("Applying feature selection..."):
                 try:
-                    feature_selector = FeatureSelector(
-                        strategy=selection_strategy,
-                        threshold=selection_threshold
-                    )
-
                     df = st.session_state.preprocessed_df.copy()
 
-                    if st.session_state.selected_target and st.session_state.selected_target in df.columns:
-                        X = df.drop(columns=[st.session_state.selected_target])
-                        y = df[st.session_state.selected_target]
+                    target_col = st.session_state.get('selected_target')
+
+                    if (selection_strategy in ["univariate", "correlation"]) and (not target_col or target_col not in df.columns):
+                        st.warning(f"⚠️ Target variable is required for '{selection_strategy}' feature selection. Please select a target variable first.")
                     else:
-                        X = df.copy()
-                        y = None
+                       # X = df.drop(columns=[target_col]) if target_col and target_col in df.columns else df.copy()
+                       # y = df[target_col] if target_col and target_col in df.columns else None
 
-                    X_numeric = X.select_dtypes(include=np.number)
+                        #X_numeric = X.select_dtypes(include=np.number)
 
-                    # 🔍 Handle missing values
-                    if X_numeric.isnull().values.any():
-                        imputer = SimpleImputer(strategy='mean')
-                        X_numeric = pd.DataFrame(imputer.fit_transform(X_numeric), columns=X_numeric.columns, index=X_numeric.index)
-                        if y is not None:
-                            y = y.loc[X_numeric.index]
+                        if X_numeric.isnull().values.any():
+                            imputer = SimpleImputer(strategy='mean')
+                            X_numeric = pd.DataFrame(imputer.fit_transform(X_numeric), columns=X_numeric.columns, index=X_numeric.index)
+                            if y is not None:
+                                # Align y with X_numeric after imputation if rows were dropped
+                                y = y.loc[X_numeric.index]
 
-                    if X_numeric.empty:
-                        st.error("❌ No numeric columns available for feature selection.")
-                    else:
-                        selected_df = feature_selector.fit_transform(X_numeric, y)
-
-                        if st.session_state.selected_target and st.session_state.selected_target in df.columns:
-                            non_numeric_cols = df.select_dtypes(exclude=np.number).columns.tolist()
-                            combined = pd.concat(
-                                [selected_df, df[non_numeric_cols], df[[st.session_state.selected_target]]],
-                                axis=1
-                            )
-                            st.session_state.preprocessed_df = combined
+                        if X_numeric.empty:
+                            st.error("❌ No numeric columns available for feature selection.")
                         else:
-                            st.session_state.preprocessed_df = selected_df
+                            feature_selector = FeatureSelector(
+                                strategy=selection_strategy,
+                                threshold=selection_threshold if selection_threshold is not None else 0.0 # Pass the threshold if defined
+                            )
+                            
+                            selected_X = feature_selector.fit_transform(X_numeric, y) # Pass y to fit_transform
 
-                        st.session_state.fitted_preprocessing_components['feature_selector'] = feature_selector
-                        st.session_state.preprocessing_steps_completed['feature_engineering'] = True
-                        st.success(f"✅ Feature selection complete. {selected_df.shape[1]} features selected.")
-                        logger.info("✅ Feature selection completed.")
+                            # Recombine with non-numeric and target columns
+                            non_numeric_cols = df.select_dtypes(exclude=np.number).columns.tolist()
+                            final_df_components = [selected_X]
+                            if non_numeric_cols:
+                                final_df_components.append(df[non_numeric_cols])
+                            if target_col and target_col in df.columns:
+                                final_df_components.append(df[[target_col]])
+
+                            st.session_state.preprocessed_df = pd.concat(final_df_components, axis=1)
+                            st.session_state.fitted_preprocessing_components['feature_selector'] = feature_selector
+                            st.session_state.preprocessing_steps_completed['feature_engineering'] = True # Mark as complete after selection
+                            st.success(f"✅ Feature selection complete. Kept {selected_X.shape[1]} features (plus non-numeric and target if applicable).")
+                            logger.info("✅ Feature selection completed.")
 
                 except Exception as e:
                     st.error(f"❌ Feature selection failed: {str(e)}")
                     logger.error(f"Feature selection failed: {str(e)}\n{traceback.format_exc()}")
 
-        # 📊 Final Preview
-        st.write("**Current Data Preview after Feature Engineering:**")
-        st.dataframe(st.session_state.preprocessed_df.head(), use_container_width=True)
+        # --- Final Preview ---
+        st.divider() # A visual separator
+        st.markdown("### 📊 Current Data Preview After Feature Engineering")
+        if not st.session_state.preprocessed_df.empty:
+            st.dataframe(st.session_state.preprocessed_df.head(), use_container_width=True)
+            st.write(f"Current Data Shape: {st.session_state.preprocessed_df.shape[0]} rows, {st.session_state.preprocessed_df.shape[1]} columns")
+            st.write(f"Columns: {', '.join(st.session_state.preprocessed_df.columns.tolist())}")
+        else:
+            st.info("No data available for preview. Please ensure data is loaded and preprocessing steps are applied.")
+
 
     # --- Download and Save Section ---
     st.markdown("---")
-    st.subheader("💾 Save & Export")
+    st.subheader("💾 Data with Selected Preprocessed Features, Ready for Model Training.")
 
     # Generate timestamped filename
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1220,7 +1313,6 @@ def main():
                         mime="text/csv",
                         key="confirm_download_csv"
                     )
-
                 elif export_format == "Excel":
                     excel_buffer = BytesIO()
                     with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
@@ -1229,10 +1321,11 @@ def main():
                             sheet_name=excel_sheet,
                             index=excel_index
                         )
+                    excel_buffer.seek(0)  # IMPORTANT
                     st.download_button(
-                        label="Confirm Download Excel",
+                        label="⬇️ Download Excel",
                         data=excel_buffer.getvalue(),
-                        file_name=download_filename,
+                        file_name=download_filename if download_filename.endswith('.xlsx') else download_filename + '.xlsx',
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         key="confirm_download_excel"
                     )
@@ -1256,8 +1349,20 @@ def main():
                         file_name=download_filename,
                         mime="application/octet-stream",
                         key="confirm_download_parquet"
-                    )
-
+                                    )
+                elif export_format == "TXT":
+                    txt_options = st.columns(2)
+                    with txt_options[0]:
+                        txt_index = st.checkbox("Include index", value=False, key="txt_index")
+                    with txt_options[1]:
+                        txt_encoding = st.selectbox(
+                            "Encoding",
+                            options=["utf-8", "latin1", "utf-16"],
+                            index=0,
+                            key="txt_encoding"
+                        )
+                    txt_separator = st.text_input("Separator", value="\t", key="txt_separator", help="Enter the character(s) to use as a column separator (e.g., ',' for CSV, '\\t' for tab-separated).")
+            
             except Exception as e:
                 st.error(f"Export failed: {str(e)}")
                 logger.error(f"Export error: {str(e)}\n{traceback.format_exc()}")
@@ -1266,7 +1371,7 @@ def main():
             if 'preprocessed_df' in st.session_state and not st.session_state.preprocessed_df.empty:
                 st.session_state['raw2_df'] = st.session_state.preprocessed_df.copy()
                 st.session_state['current_page'] = 'Visualize'
-                st.switch_page("4_Visualize.py")
+                st.switch_page("pages/4_Visualize.py")
             else:
                 st.warning("No processed data available for visualization. Please complete preprocessing first.")
 
@@ -1310,156 +1415,88 @@ def main():
     #         st.error(f"Failed to save pipeline: {str(e)}")
     #         logger.error(f"Error saving pipeline: {str(e)}")
 
-    # --- Advanced Save Format Options ---
+        # --- Advanced Save Format Options ---
+
+# Generate timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
     st.markdown("---")
     st.subheader("🔧 Save Preprocessing Pipeline")
 
     with st.expander("Pipeline Save Options", expanded=True):
         pipeline_format = st.radio(
             "Select pipeline format:",
-            options=["PKL (Pickle)", "JSON"],
+            options=["TXT", "CSV", "Excel (XLSX)", "Excel (XLSB)", "JSON"],
             horizontal=True,
-            key="pipeline_format"
+            key="pipeline_format_unique"
         )
 
-        if pipeline_format == "PKL (Pickle)":
-            pkl_options = st.columns(2)
-            with pkl_options[0]:
-                pkl_protocol = st.selectbox(
-                    "Pickle Protocol",
-                    options=["Highest (Recommended)", "4", "3"],
-                    index=0,
-                    key="pkl_protocol"
-                )
+        if pipeline_format == "TXT":
+            txt_delimiter = st.text_input("Delimiter (e.g., , or \t)", value="\t", key="txt_delimiter_unique")
+        elif pipeline_format == "CSV":
+            csv_index_unique = st.checkbox("Include index", value=False, key="csv_index_unique")
+        elif pipeline_format == "Excel (XLSX)":
+            excel_index_unique = st.checkbox("Include index", value=False, key="excel_index_unique")
+            excel_sheet = st.text_input("Sheet name", value="Pipeline", key="excel_sheet_unique")
+        elif pipeline_format == "Excel (XLSB)":
+            excel_xlsb_index = st.checkbox("Include index", value=False, key="excel_xlsb_index_unique")
+            excel_xlsb_sheet = st.text_input("Sheet name", value="Pipeline", key="excel_xlsb_sheet_unique")
         elif pipeline_format == "JSON":
-            json_options = st.columns(2)
-            with json_options[0]:
-                json_orient = st.selectbox(
-                    "JSON Orientation",
-                    options=["records", "split", "index", "columns", "values"],
-                    index=1,
-                    help="How to arrange the JSON structure"
-                )
-            with json_options[1]:
-                json_indent = st.number_input(
-                    "Indentation",
-                    min_value=0,
-                    max_value=8,
-                    value=2,
-                    help="Number of spaces for pretty-printing"
-                )
-
-        compression = st.selectbox(
-            "Compression",
-            options=["None", "gzip", "zip", "bz2"],
-            index=0,
-            help="Compression to apply to saved file"
-        )
+            json_indent = st.number_input("Indentation", min_value=0, max_value=8, value=2, help="Pretty print spaces", key="json_indent_unique")
 
         pipeline_filename = st.text_input(
             "Pipeline filename",
             value=f"preprocessing_pipeline_{timestamp}",
-            key="pipeline_filename"
+            key="pipeline_filename_unique"
         )
 
-    if st.button("💾 Save Preprocessing Pipeline", key="save_pipeline"):
+    if st.button("💾 Save Preprocessing Pipeline", key="save_pipeline_unique"):
         try:
-            pipeline = {
-                'metadata': {
-                    'creation_time': timestamp,
-                    'pipeline_format': pipeline_format,
-                    'compression': compression,
-                    'target_column': st.session_state.selected_target,
-                    'transformed_features': st.session_state.get('transformed_features', []),
-                    'preprocessing_steps': st.session_state.get('preprocessing_steps_completed', {})
-                },
-                'components': {
-                    'missing_value_handler': st.session_state.fitted_preprocessing_components.get('missing_value_handler'),
-                    'outlier_detector': st.session_state.fitted_preprocessing_components.get('outlier_detector'),
-                    'log_transformer': st.session_state.fitted_preprocessing_components.get('log_transformer'),
-                    'feature_scaler': st.session_state.fitted_preprocessing_components.get('feature_scaler'),
-                    'categorical_encoder': st.session_state.fitted_preprocessing_components.get('categorical_encoder'),
-                    'multicollinearity_reducer': st.session_state.fitted_preprocessing_components.get('multicollinearity_reducer'),
-                    'feature_creator': st.session_state.fitted_preprocessing_components.get('feature_creator'),
-                    'feature_selector': st.session_state.fitted_preprocessing_components.get('feature_selector'),
-                    'pca_extractor': st.session_state.fitted_preprocessing_components.get('pca_extractor')
-                }
-            }
+            df_pipeline = pd.DataFrame({
+                'Component': list(st.session_state.fitted_preprocessing_components.keys()),
+                'Used': [str(v is not None) for v in st.session_state.fitted_preprocessing_components.values()]
+            })
 
-            if pipeline_format == "PKL (Pickle)":
-                file_ext = ".pkl"
-                mime_type = "application/octet-stream"
-                protocol = {
-                    "Highest (Recommended)": pickle.HIGHEST_PROTOCOL,
-                    "4": 4,
-                    "3": 3
-                }[pkl_protocol]
-                full_filename = f"{pipeline_filename}{file_ext}"
-                with open(full_filename, 'wb') as f:
-                    pickle.dump(pipeline, f, protocol=protocol)
+            full_filename = ""
+            buffer = BytesIO()
 
-                buffer = BytesIO()
-                pickle.dump(pipeline, buffer, protocol=protocol)
-                buffer.seek(0)
+            if pipeline_format == "TXT":
+                full_filename = f"{pipeline_filename}.txt"
+                content = df_pipeline.to_csv(index=False, sep=txt_delimiter)
+                buffer.write(content.encode('utf-8'))
+            elif pipeline_format == "CSV":
+                full_filename = f"{pipeline_filename}.csv"
+                content = df_pipeline.to_csv(index=csv_index_unique)
+                buffer.write(content.encode('utf-8'))
+            elif pipeline_format == "Excel (XLSX)":
+                full_filename = f"{pipeline_filename}.xlsx"
+                with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+                    df_pipeline.to_excel(writer, sheet_name=excel_sheet, index=excel_index_unique)
+            elif pipeline_format == "Excel (XLSB)":
+                full_filename = f"{pipeline_filename}.xlsb"
+                import pyxlsb
+                import openpyxl
+                st.warning("Saving to .xlsb requires external tools or Windows-specific APIs. Currently not supported directly.")
+                raise NotImplementedError("Saving to .xlsb format is not implemented in this setup.")
+            elif pipeline_format == "JSON":
+                full_filename = f"{pipeline_filename}.json"
+                json_data = df_pipeline.to_dict(orient="records")
+                buffer.write(json.dumps(json_data, indent=json_indent).encode('utf-8'))
 
-            else:
-                file_ext = ".json"
-                mime_type = "application/json"
-                json_pipeline = {
-                    'metadata': pipeline['metadata'],
-                    'components': {}
-                }
-
-                for name, component in pipeline['components'].items():
-                    if component is not None and hasattr(component, '__sklearn_is_fitted__'):
-                        json_pipeline['components'][name] = {
-                            'type': str(type(component)),
-                            'params': component.get_params(),
-                            'fitted': True
-                        }
-                    else:
-                        json_pipeline['components'][name] = component
-
-                full_filename = f"{pipeline_filename}{file_ext}"
-                with open(full_filename, 'w') as f:
-                    json.dump(json_pipeline, f, indent=json_indent, default=str)
-
-                buffer = BytesIO()
-                buffer.write(json.dumps(json_pipeline, indent=json_indent, default=str).encode('utf-8'))
-                buffer.seek(0)
-
-            if compression != "None":
-                import gzip, zipfile, bz2
-                compressed_filename = f"{full_filename}.{compression}"
-
-                if compression == "gzip":
-                    with gzip.open(compressed_filename, 'wb') as f:
-                        f.write(buffer.getvalue())
-                elif compression == "zip":
-                    with zipfile.ZipFile(compressed_filename, 'w') as zf:
-                        zf.writestr(full_filename, buffer.getvalue())
-                elif compression == "bz2":
-                    with bz2.open(compressed_filename, 'wb') as f:
-                        f.write(buffer.getvalue())
-
-                with open(compressed_filename, 'rb') as f:
-                    buffer = BytesIO(f.read())
-
-                full_filename = compressed_filename
+            buffer.seek(0)
 
             st.success(f"Pipeline saved successfully as {full_filename}")
-            logger.info(f"Preprocessing pipeline saved to {full_filename}")
             st.download_button(
-                label=f"⬇️ Download Pipeline ({file_ext})",
+                label=f"⬇️ Download Pipeline ({pipeline_format})",
                 data=buffer,
                 file_name=full_filename,
-                mime=mime_type,
+                mime="text/plain" if pipeline_format == "TXT" else "application/octet-stream",
                 key=f"download_pipeline_{timestamp}"
             )
 
         except Exception as e:
             st.error(f"Failed to save pipeline: {str(e)}")
-            logger.error(f"Error saving pipeline: {str(e)}\n{traceback.format_exc()}")
+            st.error(traceback.format_exc())
 
 
 if __name__ == "__main__":
