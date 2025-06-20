@@ -26,28 +26,27 @@ atexit.register(cleanup_saved_data)
 
 # Page Styling
 st.set_page_config(page_title="Upload Dataset", layout="wide")
-
 st.markdown(
     """
     <style>
         body {
-            background-color: #F1EFEC;
+            background-color: #FAFAFA; /* Changed to a very light gray */
         }
         .stApp {
-            background-color: #F1EFEC;
+            background-color: #FAFAFA;
         }
         .stSidebar {
-            background-color: #D4C9BE;
+            background-color: #F2F2F2; /* Light gray for sidebar */
         }
         .stSidebar > div:first-child {
-            background-color: #123458;
+            background-color: #DDEAF6; /* Softer blue for top sidebar */
         }
         h1, h2, h3, .stMarkdown h1 {
-            color: #123458;
+            color: #2C3E50; /* Dark slate for headings */
         }
         .stButton > button {
-            background-color: #D4C9BE;
-            color: #030303;
+            background-color: #F2F2F2;
+            color: #2C3E50;
             font-weight: 600;
             border: none;
             border-radius: 6px;
@@ -55,7 +54,7 @@ st.markdown(
             transition: all 0.3s ease;
         }
         .stButton > button:hover {
-            background-color: #123458;
+            background-color: #2C3E50;
             color: #ffffff;
             transform: scale(1.02);
         }
@@ -67,7 +66,7 @@ st.markdown(
         .upload-header {
             font-size: 32px;
             font-weight: bold;
-            color: #123458;
+            color: #2C3E50;
         }
         .upload-subtext {
             font-size: 18px;
@@ -83,6 +82,7 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
+
 def ensure_raw_directory():
     """Ensure the raw data directory exists"""
     raw_dir = Path("data/01_raw")

@@ -4,8 +4,9 @@ import numpy as np
 import os
 import pickle
 import traceback
+
 import logging
-from typing import Optional, List, Dict
+from typing import Optional, Tuple
 import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime
@@ -53,6 +54,19 @@ class AppSettings:
     ORDINAL_FEATURES_MAP = {}  # Example, replace with actual map if needed
 
 # Utility functions
+def separate_features_and_target(df: pd.DataFrame, target_col: Optional[str]) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    if target_col and target_col in df.columns:
+        X = df.drop(columns=[target_col])
+        y = df[[target_col]].copy()
+    else:
+        X = df.copy()
+        y = pd.DataFrame(index=df.index)
+    return X, y
+
+def recombine_features_and_target(X: pd.DataFrame, y: pd.DataFrame) -> pd.DataFrame:
+    y = y.reindex(X.index)  # Ensure matching index before concat
+    return pd.concat([X, y], axis=1)
+
 def initialize_session_state():
     if 'raw1_df' not in st.session_state:
         st.session_state.raw1_df = pd.DataFrame()  # Initialize as empty DataFrame
@@ -274,114 +288,86 @@ def main():
     display_current_data_and_nan_details()
 
     # --- Preprocessing Steps ---
-    st.markdown("---")
-    
     # 1️⃣ Handle Missing Values
-    with st.expander(f"1️⃣ Handle Missing Values {'✅' if st.session_state.preprocessing_steps_completed['missing_values'] else '❌'}", expanded=True):
+    st.markdown("---")
+
+    with st.expander(f"1️⃣ Handle Missing Values {'✅' if st.session_state.preprocessing_steps_completed.get('missing_values', False) else '❌'}", expanded=True):
         st.write("Detect and handle missing values in your dataset (deletion/imputation).")
 
         df = st.session_state['preprocessed_df']
         target_col = st.session_state.get('selected_target', None)
-
-        # Separate features and target
-        if target_col and target_col in df.columns:
-            features_df = df.drop(columns=[target_col], errors='ignore')
-            target_df = df[[target_col]].copy()
-        else:
-            features_df = df.copy()
-            target_df = pd.DataFrame(index=df.index)  # Empty target_df if no target or target not found
+        X, y = separate_features_and_target(df, target_col)
 
         if 'show_missing_summary' not in st.session_state:
             st.session_state.show_missing_summary = False
 
-        # Flag rows with any missing value button
+        # 🚩 Flag rows with missing values
         if st.button("🚩 Flag Missing Values", key="btn_flag_missing"):
             st.session_state.show_missing_summary = True
-            flagged_features_df = features_df.copy()
-            flagged_features_df['Missing_Flag'] = features_df.isnull().any(axis=1).astype(int)
+            flagged_X = X.copy()
+            flagged_X['Missing_Flag'] = X.isnull().any(axis=1).astype(int)
 
-            if not target_df.empty:
-                df_flagged = pd.concat([flagged_features_df, target_df], axis=1)
-            else:
-                df_flagged = flagged_features_df
+            st.session_state['preprocessed_df'] = recombine_features_and_target(flagged_X, y)
+            st.success(f"✅ Flagged **{flagged_X['Missing_Flag'].sum()}** rows with missing values.")
 
-            st.session_state['preprocessed_df'] = df_flagged
-
-            st.success(f"✅ Flagged **{flagged_features_df['Missing_Flag'].sum()}** rows with missing values.")
             st.write("### ✅ Data After Flagging:")
-            st.dataframe(df_flagged.head(), use_container_width=True)
+            st.dataframe(st.session_state['preprocessed_df'].head(), use_container_width=True)
 
-        # Run intelligent imputation
+        # 🚀 Run Imputation
         if st.button("🚀 Run Intelligent Missing Value Handler", key="btn_missing"):
             st.session_state.data_snapshots['before_missing_handling'] = st.session_state.preprocessed_df.copy()
             try:
-                current_df = st.session_state['preprocessed_df']
-                current_target_col = st.session_state.get('selected_target', None)
+                before_nan_counts = X.isna().sum()
 
-                if current_target_col and current_target_col in current_df.columns:
-                    features_for_impute = current_df.drop(columns=[current_target_col], errors='ignore')
-                    current_target_df = current_df[[current_target_col]].copy()
-                else:
-                    features_for_impute = current_df.copy()
-                    current_target_df = pd.DataFrame(index=current_df.index)
+                # Drop 'Missing_Flag' if present to avoid its influence on imputation
+                X_cleaned = X.drop(columns=['Missing_Flag'], errors='ignore')
 
-                # Store NaN counts before imputation
-                before_nan_counts = features_for_impute.isna().sum()
+                X_transformed, summary_table, imputation_log = intelligent_impute(X_cleaned)
+                X_transformed.index = X.index  # Retain original index
 
-                # Ensure 'Missing_Flag' column is not used for imputation itself
-                features_for_impute_cleaned = features_for_impute.drop(columns=['Missing_Flag'], errors='ignore')
-                cleaned_features_df, summary_table, imputation_log = intelligent_impute(features_for_impute_cleaned)
+                # Restore 'Missing_Flag' if it existed
+                if 'Missing_Flag' in X.columns:
+                    X_transformed['Missing_Flag'] = X['Missing_Flag']
 
-                # Store NaN counts after imputation
-                after_nan_counts = cleaned_features_df.isna().sum()
+                after_nan_counts = X_transformed.isna().sum()
 
-                # Re-add 'Missing_Flag' if it existed
-                if 'Missing_Flag' in current_df.columns:
-                    cleaned_features_df['Missing_Flag'] = current_df['Missing_Flag']
-
-                imputed_cols = summary_table[summary_table["Imputation Method"].str.contains("Imputation", na=False)]["Column"].tolist()
-                dropped_cols = summary_table[summary_table["Imputation Method"].str.contains("dropped", na=False)]["Column"].tolist()
-
-                if not current_target_df.empty:
-                    df_cleaned = pd.concat([cleaned_features_df, current_target_df], axis=1)
-                else:
-                    df_cleaned = cleaned_features_df
-
-                st.session_state['preprocessed_df'] = df_cleaned
+                # Recombine and update state
+                st.session_state.preprocessed_df = recombine_features_and_target(X_transformed, y)
                 st.session_state.preprocessing_steps_completed['missing_values'] = True
 
                 st.success("✅ Missing values handled successfully!")
 
-                # Display detailed imputation report
+                # 📊 Imputation Report
                 st.write("### Imputation Report")
+                imputed_cols = summary_table[summary_table["Imputation Method"].str.contains("Imputation", na=False)]["Column"].tolist()
+                dropped_cols = summary_table[summary_table["Imputation Method"].str.contains("dropped", na=False)]["Column"].tolist()
 
-                # Create a DataFrame showing NaN counts before/after for imputed columns
                 if imputed_cols:
-                    imputed_report_data = []
+                    imputed_report = []
                     for col in imputed_cols:
-                        # Ensure the column exists in before_nan_counts and after_nan_counts
-                        nan_before = before_nan_counts[col] if col in before_nan_counts else 0
-                        nan_after = after_nan_counts[col] if col in after_nan_counts else 0
-                        method = summary_table[summary_table["Column"] == col]["Imputation Method"].iloc[0] if not summary_table[summary_table["Column"] == col].empty else "N/A"
-                        imputed_report_data.append({'Column': col, 'NaN Before': nan_before, 'NaN After': nan_after, 'Imputation Method': method})
-
-                    imputed_report = pd.DataFrame(imputed_report_data)
+                        imputed_report.append({
+                            "Column": col,
+                            "NaN Before": before_nan_counts.get(col, 0),
+                            "NaN After": after_nan_counts.get(col, 0),
+                            "Imputation Method": summary_table[summary_table["Column"] == col]["Imputation Method"].values[0]
+                        })
                     st.write("**Imputed Columns:**")
-                    st.dataframe(imputed_report, use_container_width=True)
+                    st.dataframe(pd.DataFrame(imputed_report), use_container_width=True)
                 else:
-                    st.write("**No columns were imputed**")
+                    st.write("**No columns were imputed.**")
 
                 if dropped_cols:
-                    dropped_report_data = []
+                    dropped_report = []
                     for col in dropped_cols:
-                        nan_before = before_nan_counts[col] if col in before_nan_counts else 0
-                        reason = summary_table[summary_table["Column"] == col]["Imputation Method"].iloc[0] if not summary_table[summary_table["Column"] == col].empty else "N/A"
-                        dropped_report_data.append({'Column': col, 'NaN Count Before Dropping': nan_before, 'Reason': reason})
-                    dropped_report = pd.DataFrame(dropped_report_data)
+                        dropped_report.append({
+                            "Column": col,
+                            "NaN Count Before Dropping": before_nan_counts.get(col, 0),
+                            "Reason": summary_table[summary_table["Column"] == col]["Imputation Method"].values[0]
+                        })
                     st.write("**Dropped Columns:**")
-                    st.dataframe(dropped_report, use_container_width=True)
+                    st.dataframe(pd.DataFrame(dropped_report), use_container_width=True)
                 else:
-                    st.write("**No columns were dropped**")
+                    st.write("**No columns were dropped.**")
 
                 st.write("**Imputation Log:**")
                 st.code('\n'.join(imputation_log))
@@ -390,23 +376,40 @@ def main():
                 st.dataframe(st.session_state['preprocessed_df'].head(), use_container_width=True)
 
             except Exception as e:
-                st.error(f"🚫 Missing value handling failed: {e}")
+                st.error(f"🚫 Missing value handling failed: {str(e)}")
+                logger.error(f"Missing value handler failed: {str(e)}\n{traceback.format_exc()}")
+        # Optional: Remove Missing_Flag column if it exists after imputation
+        if 'Missing_Flag' in st.session_state.preprocessed_df.columns:
+            st.markdown("### 🧹 Post-Imputation Cleanup")
+            st.info("`Missing_Flag` column was useful for tracking but can be dropped before proceeding.")
 
-        # Preview cleaned data
+            if st.button("🗑️ Drop 'Missing_Flag' Column", key="btn_drop_missing_flag"):
+                st.session_state.preprocessed_df.drop(columns=['Missing_Flag'], inplace=True)
+                st.success("✅ 'Missing_Flag' column removed successfully.")
+
+                # Optional: Preview after drop
+                st.write("### ✅ Data After Cleanup:")
+                st.dataframe(st.session_state['preprocessed_df'].head(), use_container_width=True)
+
+
+        # 📊 Preview
         if not st.session_state['preprocessed_df'].empty:
             st.write("---")
             st.write("### Current Data Preview (After last action in this section):")
             st.dataframe(st.session_state['preprocessed_df'].head(), use_container_width=True)
             show_nan_rows(st.session_state['preprocessed_df'], key_suffix="after_handling")
 
+
     # 2️⃣ Handle Outliers
     with st.expander(f"2️⃣ Handle Outliers {'✅' if st.session_state.preprocessing_steps_completed.get('outliers', False) else '❌'}", expanded=True):
-        st.write("Detect and handle outliers using IQR method. Preview, flag, or remove outliers from your dataset.")
+        st.write("Detect and handle outliers using IQR or other methods. Preview, flag, or remove outliers from your dataset.")
 
-        # Ensure preprocessed_df exists before proceeding
         if st.session_state.preprocessed_df.empty:
             st.warning("Please load and preprocess your data in previous steps first.")
         else:
+            df = st.session_state.preprocessed_df.copy()
+            target_col = st.session_state.get('selected_target', None)
+
             outlier_factor = st.number_input(
                 "IQR Factor (e.g., 1.5 for mild, 3 for extreme outliers)",
                 min_value=0.1,
@@ -423,37 +426,37 @@ def main():
             )
             selected_detection_method = DetectionMethod[selected_detection_method_name]
 
-            # 🟠 DETECT OUTLIERS
+            X, y = separate_features_and_target(df, target_col)
+            numeric_X = X.select_dtypes(include=np.number)
+
+            if target_col and target_col in numeric_X.columns:
+                numeric_X = numeric_X.drop(columns=[target_col])
+
+            # --- DETECT OUTLIERS ---
             if st.button("🔍 Detect Outliers", key="btn_outlier_detect"):
                 try:
-                    df = st.session_state['preprocessed_df'].copy()
-                    target_col = st.session_state.get('selected_target', None)
-
-                    features_df_numeric = df.select_dtypes(include=np.number)
-                    if target_col and target_col in features_df_numeric.columns:
-                        features_df_numeric = features_df_numeric.drop(columns=[target_col])
-
-                    if features_df_numeric.empty:
-                        st.warning("⚠️ No numeric columns found in the dataset to detect outliers.")
+                    if numeric_X.empty:
+                        st.warning("⚠️ No numeric columns found to detect outliers.")
                     else:
                         detector = OutlierDetector(method=selected_detection_method, factor=outlier_factor)
-                        detector.fit(features_df_numeric)
-                        outlier_table_summary = detector.detect_outliers_table(features_df_numeric)
+                        detector.fit(numeric_X)
+                        summary = detector.detect_outliers_table(numeric_X)
 
                         st.session_state['outlier_detector'] = detector
-                        st.session_state['outlier_table_summary'] = outlier_table_summary
+                        st.session_state['outlier_table_summary'] = summary
 
-                        st.write("📊 **Outlier Detection Summary:**")
-                        st.dataframe(outlier_table_summary, use_container_width=True)
+                        st.subheader("📊 Outlier Detection Summary")
+                        st.dataframe(summary, use_container_width=True)
 
-                        temp_outlier_rows_df = detector.get_outlier_rows(features_df_numeric)
-                        st.success(f"✅ Outlier detection completed! Found {temp_outlier_rows_df.shape[0]} unique rows with at least one outlier.")
-                        st.info(f"Columns checked: {features_df_numeric.columns.tolist()}")
+                        flagged_rows = detector.get_outlier_rows(numeric_X)
+                        st.success(f"✅ Detected {flagged_rows.shape[0]} rows with at least one outlier.")
+                        st.info(f"Checked columns: {list(numeric_X.columns)}")
+
                 except Exception as e:
                     st.error(f"🚫 Outlier detection failed: {e}")
-                    if 'preprocessed_df' in st.session_state:
-                        st.dataframe(st.session_state['preprocessed_df'].head(), use_container_width=True)
+                    logger.exception("Detection failed")
 
+            # --- DISPLAY DETECTION REPORT ---
             if 'outlier_table_summary' in st.session_state and not st.session_state['outlier_table_summary'].empty:
                 st.markdown("---")
                 st.write("### Outlier Detection Report:")
@@ -461,145 +464,108 @@ def main():
 
                 if st.checkbox("Show sample of rows with outliers", key="show_outlier_rows_checkbox"):
                     if 'outlier_detector' in st.session_state:
-                        df_current = st.session_state.preprocessed_df.copy()
-                        target_col = st.session_state.get('selected_target', None)
-                        features_df_numeric = df_current.select_dtypes(include=np.number)
-                        if target_col and target_col in features_df_numeric.columns:
-                            features_df_numeric = features_df_numeric.drop(columns=[target_col])
-
-                        sample_outlier_rows = st.session_state['outlier_detector'].get_outlier_rows(features_df_numeric)
-                        if not sample_outlier_rows.empty:
-                            st.write("**Sample of Rows with Detected Outliers:**")
-                            st.dataframe(df_current.loc[sample_outlier_rows.index].head(10), use_container_width=True)
-                            st.info(f"Displaying first 10 of {len(sample_outlier_rows)} outlier rows.")
+                        sample_rows = st.session_state['outlier_detector'].get_outlier_rows(numeric_X)
+                        if not sample_rows.empty:
+                            st.dataframe(df.loc[sample_rows.index].head(10), use_container_width=True)
+                            st.info(f"Showing first 10 of {sample_rows.shape[0]} rows with detected outliers.")
                         else:
-                            st.warning("⚠️ No valid outlier rows found to display based on the last detection.")
+                            st.warning("⚠️ No outlier rows found.")
                     else:
-                        st.warning("Please run 'Detect Outliers' first to view sample rows.")
+                        st.warning("Run 'Detect Outliers' first.")
 
-            # 🟠 FLAG OUTLIERS
+            # --- FLAG OUTLIERS ---
             if st.button("🚩 Flag Outliers", key="btn_outlier_flag"):
-                if st.session_state.preprocessed_df.empty:
-                    st.warning("⚠️ Please load and preprocess your data first.")
-                elif 'outlier_detector' not in st.session_state:
-                    st.warning("⚠️ Please run 'Detect Outliers' first to configure the detector.")
-                else:
-                    try:
-                        df_current = st.session_state.preprocessed_df.copy()
-                        detector_for_flagging = OutlierDetector(
+                try:
+                    if numeric_X.empty:
+                        st.warning("⚠️ No numeric columns available to flag.")
+                    else:
+                        detector = OutlierDetector(
                             method=selected_detection_method,
                             factor=outlier_factor,
                             handling=OutlierHandlingMethod.FLAG
                         )
+                        detector.fit(numeric_X)
+                        flagged_df = detector.transform(X.copy())
 
-                        target_col = st.session_state.get('selected_target', None)
-                        temp_features_df = df_current.select_dtypes(include=np.number)
-                        if target_col and target_col in temp_features_df.columns:
-                            temp_features_df = temp_features_df.drop(columns=[target_col])
-
-                        if temp_features_df.empty:
-                            st.warning("⚠️ No numeric columns available to flag outliers.")
-                            return
-
-                        detector_for_flagging.fit(temp_features_df)
-                        df_flagged = detector_for_flagging.transform(df_current)
-
-                        st.session_state.preprocessed_df = df_flagged
+                        st.session_state.preprocessed_df = recombine_features_and_target(flagged_df, y)
                         st.session_state.preprocessing_steps_completed['outliers'] = True
 
-                        total_flagged_rows = df_flagged.filter(like='Outlier_Flag_').any(axis=1).sum()
-                        st.success(f"✅ Outliers flagged successfully! {total_flagged_rows} rows have at least one outlier flag.")
+                        total_flagged = flagged_df.filter(like='Outlier_Flag_').any(axis=1).sum()
+                        st.success(f"✅ Outliers flagged! {total_flagged} rows have one or more flags.")
 
-                        st.write("### Flagging Details:")
-                        flag_cols = [col for col in df_flagged.columns if col.startswith('Outlier_Flag_') and col != 'Outlier_Flag_Any']
+                        flag_cols = [col for col in flagged_df.columns if col.startswith('Outlier_Flag_')]
                         if flag_cols:
-                            st.write("**Outlier Flag Counts per Column:**")
-                            flag_counts = df_flagged[flag_cols].sum().reset_index()
-                            flag_counts.columns = ['Flag Column', 'Count True']
-                            flag_counts['Flag Column'] = flag_counts['Flag Column'].str.replace('Outlier_Flag_', '')
+                            st.write("### Flag Summary")
+                            flag_counts = flagged_df[flag_cols].sum().reset_index()
+                            flag_counts.columns = ['Feature', 'Count']
+                            flag_counts['Feature'] = flag_counts['Feature'].str.replace('Outlier_Flag_', '')
                             st.dataframe(flag_counts, use_container_width=True)
 
-                            st.write("**Sample of Flagged Rows (with original values and flags):**")
-                            flagged_sample_df = df_flagged[df_flagged['Outlier_Flag_Any'] == 1]
-                            if not flagged_sample_df.empty:
-                                original_numeric_cols_with_flags = [c.replace('Outlier_Flag_', '') for c in flag_cols]
-                                display_cols_for_sample = [col for col in original_numeric_cols_with_flags if col in df_current.columns] + flag_cols
-                                if 'Outlier_Flag_Any' in df_flagged.columns:
-                                    display_cols_for_sample.append('Outlier_Flag_Any')
-                                st.dataframe(flagged_sample_df[display_cols_for_sample].head(10), use_container_width=True)
-                                st.info(f"Displaying first 10 of {flagged_sample_df.shape[0]} rows with outliers flagged.")
+                            st.write("### Sample of Flagged Rows")
+                            flagged_sample = flagged_df[flagged_df['Outlier_Flag_Any'] == 1]
+                            if not flagged_sample.empty:
+                                display_cols = [col for col in X.columns if col in flagged_sample.columns] + flag_cols + ['Outlier_Flag_Any']
+                                st.dataframe(flagged_sample[display_cols].head(10), use_container_width=True)
                             else:
-                                st.info("No rows were flagged as outliers with the current settings.")
-                        else:
-                            st.info("No numeric columns found or no outliers detected to flag.")
-                    except Exception as e:
-                        st.error(f"🚫 Flagging outliers failed: {e}")
-                        logger.exception("Error during outlier flagging:")
+                                st.info("No flagged rows to show.")
+                except Exception as e:
+                    st.error(f"🚫 Flagging failed: {e}")
+                    logger.exception("Flagging error")
 
-            # 🟠 REMOVE OUTLIERS
+            # --- REMOVE OUTLIERS ---
             if st.button("❌ Remove Outliers", key="btn_outlier_remove"):
-                if st.session_state.preprocessed_df.empty:
-                    st.warning("⚠️ Please load and preprocess your data first.")
-                elif 'outlier_detector' not in st.session_state:
-                    st.warning("⚠️ Please run 'Detect Outliers' first to configure the detector.")
-                else:
-                    try:
-                        df_current = st.session_state.preprocessed_df.copy()
-                        original_rows = df_current.shape[0]
+                try:
+                    original_rows = X.shape[0]
+                    detector = OutlierDetector(
+                        method=selected_detection_method,
+                        factor=outlier_factor,
+                        handling=OutlierHandlingMethod.REMOVE
+                    )
+                    detector.fit(numeric_X)
+                    cleaned_X = detector.transform(X.copy())
+                    cleaned_y = y.loc[cleaned_X.index]
 
-                        detector_for_removal = OutlierDetector(
-                            method=selected_detection_method,
-                            factor=outlier_factor,
-                            handling=OutlierHandlingMethod.REMOVE
-                        )
+                    st.session_state.preprocessed_df = recombine_features_and_target(cleaned_X, cleaned_y)
+                    st.session_state.preprocessing_steps_completed['outliers'] = True
 
-                        target_col = st.session_state.get('selected_target', None)
-                        temp_features_df = df_current.select_dtypes(include=np.number)
-                        if target_col and target_col in temp_features_df.columns:
-                            temp_features_df = temp_features_df.drop(columns=[target_col])
+                    rows_removed = original_rows - cleaned_X.shape[0]
+                    st.success(f"✅ Outliers removed. {rows_removed} rows dropped.")
+                except Exception as e:
+                    st.error(f"🚫 Removal failed: {e}")
+                    logger.exception("Removal error")
 
-                        if temp_features_df.empty:
-                            st.warning("⚠️ No numeric columns available to remove outliers from.")
-                            return
+            # --- CLEANUP: DROP OUTLIER FLAGS ---
+            existing_cols = st.session_state.preprocessed_df.columns
+            flag_cols = [col for col in existing_cols if col.startswith('Outlier_Flag_')]
 
-                        detector_for_removal.fit(temp_features_df)
-                        df_cleaned = detector_for_removal.transform(df_current)
+            if flag_cols:
+                st.markdown("### 🧹 Post-Outlier Handling Cleanup")
+                st.info(f"Outlier flag columns detected: {', '.join(flag_cols)}. You can remove them before proceeding.")
 
-                        st.session_state.preprocessed_df = df_cleaned
-                        st.session_state.preprocessing_steps_completed['outliers'] = True
-                        rows_removed = original_rows - st.session_state.preprocessed_df.shape[0]
-                        st.success(f"✅ Outliers removed successfully! ({rows_removed} rows removed)")
+                if st.button("🗑️ Drop Outlier Flag Columns", key="btn_drop_outlier_flags"):
+                    st.session_state.preprocessed_df.drop(columns=flag_cols, inplace=True)
+                    st.success("✅ Outlier flag columns removed successfully.")
 
-                    except Exception as e:
-                        st.error(f"🚫 Outlier removal failed: {e}")
-                        logger.exception("Error during outlier removal:")
+                    st.write("### ✅ Data After Cleanup:")
+                    st.dataframe(st.session_state.preprocessed_df.head(), use_container_width=True)
+                    st.caption(f"Data shape: {st.session_state.preprocessed_df.shape}")
 
-            if not st.session_state['preprocessed_df'].empty:
+            # --- Final Preview ---
+            if not st.session_state.preprocessed_df.empty:
                 st.markdown("---")
-                st.write("### Current Data Preview:")
-                st.dataframe(st.session_state['preprocessed_df'].head(), use_container_width=True)
-                st.write(f"DataFrame Shape: {st.session_state['preprocessed_df'].shape}")
+                st.subheader("📦 Final Data After Outlier Handling")
+                st.dataframe(st.session_state.preprocessed_df.head(), use_container_width=True)
+                st.caption(f"Data shape: {st.session_state.preprocessed_df.shape}")
 
-    # 3️⃣ Log Transformation
+    # 3️⃣ Distribution Corrections: Skewness & Kurtosis
     with st.expander(f"3️⃣ Distribution Corrections: Skewness & Kurtosis {'✅' if st.session_state.preprocessing_steps_completed.get('log_transform', False) else '❌'}", expanded=False):
-        
+
         st.write("""
         Apply transformation to reduce skewness or improve distribution characteristics:
-        - **Log**: Use for right-skewed data with only positive values
-        - **Square Root**: Best for count data or moderate skewness
-        - **Cube Root**: Handles both positive and negative values with moderate skewness
-        - **Inverse**: For high skewness dominated by large values
-        - **Box-Cox**: Power transform for strictly positive data
-        - **Yeo-Johnson**: Similar to Box-Cox but works with negatives
-        - **Power**: Flexible transformation with custom exponent
-        - **Winsorizing**: Cap extreme outliers to reduce skew
-        - **Clipping**: Similar to Winsorizing, but hard-limits values
-        - **Constant Addition**: Adds constant to enable log/box-cox on non-positive values
-        - **Data Binning**: Groups values into bins to reduce variability
-        - **Quantile Transform**: Maps to uniform or normal distribution
-        - **Z-Score**: Standardizes values (mean 0, std 1), mildly reduces skew
+        - **Log**, **Square Root**, **Cube Root**, **Inverse**
+        - **Box-Cox**, **Yeo-Johnson**, **Power**, **Winsorizing**, **Clipping**, **Constant Addition**
+        - **Data Binning**, **Quantile Transform**, **Z-Score**
         """)
-
 
         col1, col2 = st.columns(2)
 
@@ -607,21 +573,10 @@ def main():
             log_method = st.selectbox(
                 "Select Transformation Method",
                 options=[
-                    "log",
-                    "square-root",
-                    "cube-root",
-                    "inverse",
-                    "box-cox",
-                    "yeo-johnson",
-                    "power",
-                    "winsorizing",
-                    "clipping",
-                    "constant-addition",
-                    "data-binning",
-                    "quantile-transform",
-                    "z-score"
+                    "log", "square-root", "cube-root", "inverse", "box-cox", "yeo-johnson",
+                    "power", "winsorizing", "clipping", "constant-addition",
+                    "data-binning", "quantile-transform", "z-score"
                 ],
-
                 index=0,
                 help="Choose the mathematical transformation method to apply"
             )
@@ -648,207 +603,132 @@ def main():
                 help="Show additional information about the transformation"
             )
 
-        numeric_cols = []
-        if not st.session_state.preprocessed_df.empty:
-            numeric_cols = st.session_state.preprocessed_df.select_dtypes(include=np.number).columns.tolist()
-            if st.session_state.selected_target and st.session_state.selected_target in numeric_cols:
-                numeric_cols.remove(st.session_state.selected_target)
+        numeric_cols = st.session_state.preprocessed_df.select_dtypes(include=np.number).columns.tolist()
+        if st.session_state.selected_target in numeric_cols:
+            numeric_cols.remove(st.session_state.selected_target)
 
         if not numeric_cols:
-            st.warning("No numeric columns available for transformation. Please load data with numeric features.")
+            st.warning("No numeric columns available for transformation.")
             features_to_transform = []
         else:
             features_to_transform = st.multiselect(
-                "Select features to transform (default: all numeric)",
+                "Select features to transform",
                 options=numeric_cols,
                 default=numeric_cols
             )
 
+        # --- Skewness Analysis ---
         if st.button("📊 Analyze Feature Skewness", key="check_skewness"):
-            if 'preprocessed_df' not in st.session_state or st.session_state.preprocessed_df.empty:
-                st.error("No data available for analysis. Please load data first.")
-            elif not features_to_transform:
+            df = st.session_state.preprocessed_df.copy()
+            if not features_to_transform:
                 st.warning("No features selected for skewness analysis.")
             else:
-                df_for_skewness = st.session_state.preprocessed_df[features_to_transform].select_dtypes(include=np.number)
-                if df_for_skewness.empty:
-                    st.warning("No numeric columns found in selected features to compute skewness.")
-                else:
-                    try:
-                        with st.spinner("Calculating skewness..."):
-                            skew_vals = df_for_skewness.skew().sort_values(ascending=False)
-                            skew_df = pd.DataFrame({
-                                "Feature": skew_vals.index,
-                                "Skewness": skew_vals.values,
-                                "Interpretation": [
-                                    "Highly skewed (transform recommended)" if abs(val) > 1.0 else
-                                    "Moderately skewed (transform may help)" if 0.5 < abs(val) <= 1.0 else
-                                    "Approx. symmetric (no transform needed)"
-                                    for val in skew_vals.values
-                                ],
-                                "Suggested Action": [
-                                    f"Apply {log_method}" if abs(val) > 1.0 else
-                                    f"Consider {log_method}" if 0.5 < abs(val) <= 1.0 else
-                                    "No action needed"
-                                    for val in skew_vals.values
-                                ]
-                            })
-
-                            st.subheader("🔍 Skewness Analysis Report")
-                            st.dataframe(
-                                skew_df.style.background_gradient(
-                                    subset=['Skewness'],
-                                    cmap='RdYlGn_r',
-                                    vmin=-3,
-                                    vmax=3
-                                ).format({'Skewness': '{:.2f}'})
-                            )
-
-                            st.session_state.skewness_results = skew_df
-
-                            st.subheader("📈 Skewness Distribution")
-                            fig, ax = plt.subplots(figsize=(10, max(4, len(skew_vals) * 0.5)))
-                            sns.barplot(x=skew_vals.index, y=skew_vals.values, ax=ax, palette="coolwarm")
-                            plt.xticks(rotation=45, ha='right')
-                            plt.axhline(0, color='black', linestyle='--')
-                            plt.axhline(0.5, color='orange', linestyle=':')
-                            plt.axhline(-0.5, color='orange', linestyle=':')
-                            plt.axhline(1.0, color='red', linestyle=':')
-                            plt.axhline(-1.0, color='red', linestyle=':')
-                            plt.title("Feature Skewness")
-                            plt.tight_layout()
-                            st.pyplot(fig)
-
-                    except Exception as e:
-                        st.error(f"Error calculating skewness: {str(e)}")
-                        logger.error(f"Skewness calculation error: {str(e)}\n{traceback.format_exc()}")
-
-        if st.button("🚀 Apply Transformation", key="apply_log_transform"):
-            if 'preprocessed_df' not in st.session_state or st.session_state.preprocessed_df.empty:
-                st.error("No data available for transformation. Please load data first.")
-            elif not features_to_transform:
-                st.warning("No features selected for transformation. Please select at least one feature.")
-            else:
                 try:
-                    st.session_state.data_snapshots['before_log_transform'] = st.session_state.preprocessed_df.copy()
-                    st.session_state.transformed_features_list = features_to_transform.copy()
+                    df_skew = df[features_to_transform].select_dtypes(include=np.number)
+                    skew_vals = df_skew.skew().sort_values(ascending=False)
+                    skew_df = pd.DataFrame({
+                        "Feature": skew_vals.index,
+                        "Skewness": skew_vals.values,
+                        "Interpretation": [
+                            "Highly skewed (transform recommended)" if abs(v) > 1 else
+                            "Moderately skewed (transform may help)" if 0.5 < abs(v) <= 1 else
+                            "Approx. symmetric" for v in skew_vals.values
+                        ],
+                        "Suggested Action": [
+                            f"Apply {log_method}" if abs(v) > 1 else
+                            f"Consider {log_method}" if 0.5 < abs(v) <= 1 else
+                            "No action needed" for v in skew_vals.values
+                        ]
+                    })
+                    st.subheader("🔍 Skewness Analysis Report")
+                    st.dataframe(
+                        skew_df.style.background_gradient(subset=["Skewness"], cmap='RdYlGn_r').format({"Skewness": "{:.2f}"})
+                    )
 
-                    with st.spinner(f"Applying {log_method} transformation..."):
-                        df = st.session_state.preprocessed_df.copy()
-                        target_col = st.session_state.get('selected_target', None)
+                    # Skewness bar chart
+                    st.subheader("📈 Skewness Distribution")
+                    fig, ax = plt.subplots(figsize=(10, max(4, len(skew_vals) * 0.5)))
+                    sns.barplot(x=skew_vals.index, y=skew_vals.values, ax=ax, palette="coolwarm")
+                    ax.axhline(0, color='black', linestyle='--')
+                    ax.axhline(1, color='red', linestyle=':')
+                    ax.axhline(-1, color='red', linestyle=':')
+                    ax.set_title("Feature Skewness")
+                    plt.xticks(rotation=45)
+                    st.pyplot(fig)
 
-                        non_transformed_cols = [col for col in df.columns
-                                                if col not in features_to_transform and
-                                                (not target_col or col != target_col)]
+                    st.session_state.skewness_results = skew_df
 
-                        features_df = df[features_to_transform].copy()
-                        other_cols_df = df[non_transformed_cols].copy() if non_transformed_cols else pd.DataFrame(index=df.index)
-                        target_df = df[[target_col]] if target_col and target_col in df.columns else pd.DataFrame(index=df.index)
-
-                        log_transformer = LogTransformer(
-                            method=log_method,
-                            handle_zeros=handle_zeros,
-                            offset=offset_value,
-                            columns=features_to_transform
-                        )
-
-                        transformed_features_df = log_transformer.fit_transform(features_df)
-
-                        transformed_df = pd.concat([
-                            transformed_features_df,
-                            other_cols_df,
-                            target_df
-                        ], axis=1).reindex(df.index)
-
-                        transformed_df = transformed_df[df.columns]
-
-                        st.session_state.preprocessed_df = transformed_df
-                        st.session_state.preprocessing_steps_completed['log_transform'] = True
-                        st.session_state.transformed_features = features_to_transform
-
-                        st.success(f"✅ Successfully applied {log_method} transformation to {len(features_to_transform)} feature(s): {', '.join(features_to_transform)}")
-
-                except ValueError as e:
-                    st.error(f"Transformation error: {str(e)}")
-                    logger.error(f"Transformation error: {str(e)}\n{traceback.format_exc()}")
-                    if 'before_log_transform' in st.session_state.data_snapshots:
-                        st.session_state.preprocessed_df = st.session_state.data_snapshots['before_log_transform']
-                        st.error("❌ Transformation failed. Reverted to pre-transformation state.")
                 except Exception as e:
-                    st.error(f"Unexpected error: {str(e)}")
-                    logger.error(f"Unexpected transformation error: {str(e)}\n{traceback.format_exc()}")
-                    if 'before_log_transform' in st.session_state.data_snapshots:
-                        st.session_state.preprocessed_df = st.session_state.data_snapshots['before_log_transform']
-                        st.error("❌ Transformation failed. Reverted to pre-transformation state.")
+                    st.error(f"Skewness analysis failed: {str(e)}")
+                    logger.error(traceback.format_exc())
 
-        if (st.session_state.preprocessing_steps_completed.get('log_transform', False) and
-            'transformed_features_list' in st.session_state and
-            st.session_state.transformed_features_list and
-            'before_log_transform' in st.session_state.data_snapshots and
-            not st.session_state.data_snapshots['before_log_transform'].empty):
+        # --- Apply Transformation ---
+        if st.button("🚀 Apply Transformation", key="apply_log_transform"):
+            try:
+                st.session_state.data_snapshots['before_log_transform'] = st.session_state.preprocessed_df.copy()
+                st.session_state.transformed_features_list = features_to_transform.copy()
 
-            available_features = [f for f in st.session_state.transformed_features_list
-                                  if f in st.session_state.data_snapshots['before_log_transform'].columns and
-                                  f in st.session_state.preprocessed_df.columns]
+                df = st.session_state.preprocessed_df.copy()
+                target_col = st.session_state.get('selected_target', None)
 
-            if not available_features:
-                st.warning("No transformed features available for comparison.")
-            else:
-                if ('selected_feature_for_comparison' not in st.session_state or
-                        st.session_state.selected_feature_for_comparison not in available_features):
-                    st.session_state.selected_feature_for_comparison = available_features[0]
-
-                selected_feature = st.selectbox(
-                    "Select feature to view transformation effect",
-                    options=available_features,
-                    index=available_features.index(st.session_state.selected_feature_for_comparison),
-                    key='feature_comparison_select'
+                transformer = LogTransformer(
+                    method=log_method,
+                    handle_zeros=handle_zeros,
+                    offset=offset_value,
+                    columns=features_to_transform
                 )
 
-                st.session_state.selected_feature_for_comparison = selected_feature
+                transformed_X = transformer.fit_transform(df[features_to_transform])
+                remaining_X = df.drop(columns=features_to_transform)
+                combined_df = pd.concat([transformed_X, remaining_X], axis=1)[df.columns]
+
+                st.session_state.preprocessed_df = combined_df
+                st.session_state.preprocessing_steps_completed['log_transform'] = True
+
+                st.success(f"✅ Applied {log_method} transformation to {len(features_to_transform)} feature(s).")
+
+            except Exception as e:
+                st.error(f"❌ Transformation failed: {str(e)}")
+                logger.error(traceback.format_exc())
+                if 'before_log_transform' in st.session_state.data_snapshots:
+                    st.session_state.preprocessed_df = st.session_state.data_snapshots['before_log_transform']
+                    st.error("🔄 Reverted to pre-transformation state.")
+
+        # --- Comparison Visualization ---
+        if (st.session_state.preprocessing_steps_completed.get('log_transform', False) and
+            'transformed_features_list' in st.session_state and
+            'before_log_transform' in st.session_state.data_snapshots):
+
+            available_features = [f for f in st.session_state.transformed_features_list
+                                if f in st.session_state.preprocessed_df.columns]
+
+            if available_features:
+                selected_feature = st.selectbox("Select Feature to Compare", options=available_features)
 
                 col1, col2 = st.columns(2)
+
                 with col1:
                     st.write("**Before Transformation**")
-                    fig_before, ax_before = plt.subplots(figsize=(6, 4))
-                    sns.histplot(
-                        st.session_state.data_snapshots['before_log_transform'][selected_feature],
-                        ax=ax_before,
-                        kde=True,
-                        color='skyblue'
-                    )
-                    ax_before.set_title(f"Before: {selected_feature}")
-                    ax_before.set_xlabel(selected_feature)
-                    ax_before.set_ylabel("Frequency")
-                    st.pyplot(fig_before)
-
+                    fig, ax = plt.subplots()
+                    sns.histplot(st.session_state.data_snapshots['before_log_transform'][selected_feature], kde=True, ax=ax)
+                    ax.set_title("Before")
+                    st.pyplot(fig)
                     skew_before = st.session_state.data_snapshots['before_log_transform'][selected_feature].skew()
                     st.caption(f"Skewness before: {skew_before:.2f}")
 
                 with col2:
                     st.write("**After Transformation**")
-                    fig_after, ax_after = plt.subplots(figsize=(6, 4))
-                    sns.histplot(
-                        st.session_state.preprocessed_df[selected_feature],
-                        ax=ax_after,
-                        kde=True,
-                        color='salmon'
-                    )
-                    ax_after.set_title(f"After: {selected_feature}")
-                    ax_after.set_xlabel(selected_feature)
-                    ax_after.set_ylabel("Frequency")
-                    st.pyplot(fig_after)
-
+                    fig, ax = plt.subplots()
+                    sns.histplot(st.session_state.preprocessed_df[selected_feature], kde=True, ax=ax)
+                    ax.set_title("After")
+                    st.pyplot(fig)
                     skew_after = st.session_state.preprocessed_df[selected_feature].skew()
                     st.caption(f"Skewness after: {skew_after:.2f}")
 
-                improvement = (abs(skew_before) - abs(skew_after)) / abs(skew_before) * 100
-                st.success(f"Skewness improved by {improvement:.1f}% (from {skew_before:.2f} to {skew_after:.2f})")
-
-        elif st.session_state.preprocessing_steps_completed.get('log_transform', False) and not st.session_state.transformed_features_list:
-            st.warning("No features were selected for transformation. Please apply transformation to view comparison.")
-        elif st.session_state.preprocessing_steps_completed.get('log_transform', False) and 'before_log_transform' not in st.session_state.data_snapshots:
-            st.warning("Original data snapshot missing. Please re-apply transformation to enable comparison.")
+                improvement = (abs(skew_before) - abs(skew_after)) / abs(skew_before) * 100 if skew_before else 0
+                st.success(f"🎯 Skewness improved by {improvement:.1f}%")
+            else:
+                st.info("No valid transformed features available for visualization.")
 
     # 4️⃣ Feature Scaling
     with st.expander(f"4️⃣ Apply Feature Scaling {'✅' if st.session_state.preprocessing_steps_completed.get('scaling', False) else '❌'}", expanded=False):
@@ -859,72 +739,76 @@ def main():
         Scaling helps models converge faster and improves performance, especially for algorithms sensitive to feature magnitudes (e.g., SVMs, KNNs, gradient-based methods).
 
         **Choose the right scaler based on data distribution:**
-        - 🟦 **StandardScaler (Z-score)**: Use when features follow **normal distribution** and have **varying units** **(Data Standarization)**.
+        - 🟦 **StandardScaler (Z-score)**: Use when features follow **normal distribution** and have **varying units** **(Data Standardization)**.
         - 🟩 **MinMaxScaler**: Ideal when data doesn't follow normal distribution or contains **outliers** **(Data Normalization)**.
         """)
-            
+
         scaler_type = st.radio(
             "Select Scaler Type:",
             ('StandardScaler', 'MinMaxScaler'),
             key="scaler_type_radio"
         )
-        
+
         if st.button("🚀 Apply Feature Scaling", key="apply_scaling"):
             st.session_state.data_snapshots['before_scaling'] = st.session_state.preprocessed_df.copy()
-            with st.spinner(f"Applying {scaler_type} scaling..."):
-                # Separate features and target
-                df = st.session_state.preprocessed_df.copy()
-                target_col = st.session_state.get('selected_target', None)
-                
-                if target_col and target_col in df.columns:
-                    features_df = df.drop(columns=[target_col])
-                    target_df = df[[target_col]]
-                else:
-                    features_df = df.copy()
-                    target_df = pd.DataFrame(index=df.index)
-                
-                # Apply scaling to features only
-                scaler_obj = FeatureScaler(method='standard' if scaler_type == 'StandardScaler' else 'minmax')
 
-                scaled_features_df = scaler_obj.fit_transform(features_df)
-                
-                # Recombine with target
-                if not target_df.empty:
-                    scaled_df = pd.concat([scaled_features_df, target_df], axis=1)
-                else:
-                    scaled_df = scaled_features_df
-                
-                st.session_state.preprocessed_df = scaled_df
-                st.session_state.fitted_preprocessing_components['feature_scaler'] = scaler_obj
-                st.session_state.preprocessing_steps_completed['scaling'] = True
-                st.success("Feature scaling completed!")
-                logger.info("Feature scaling completed.")
-        
-        st.write("**Current Data Preview after Scaling:**")
+            with st.spinner(f"Applying {scaler_type} scaling..."):
+                try:
+                    df = st.session_state.preprocessed_df.copy()
+                    target_col = st.session_state.get('selected_target', None)
+                    X, y = separate_features_and_target(df, target_col)
+
+                    # Apply scaling only to numeric columns
+                    X_numeric = X.select_dtypes(include='number')
+
+                    if X_numeric.empty:
+                        st.warning("⚠️ No numeric features found for scaling.")
+                    else:
+                        scaler_obj = FeatureScaler(method='standard' if scaler_type == 'StandardScaler' else 'minmax')
+                        X_scaled = scaler_obj.fit_transform(X_numeric)
+                        X_scaled.index = X.index
+
+                        # Reattach non-numeric columns (if any)
+                        non_numeric_X = X.select_dtypes(exclude='number')
+                        X_final = pd.concat([X_scaled, non_numeric_X], axis=1)
+
+                        st.session_state.preprocessed_df = recombine_features_and_target(X_final, y)
+                        st.session_state.fitted_preprocessing_components['feature_scaler'] = scaler_obj
+                        st.session_state.preprocessing_steps_completed['scaling'] = True
+
+                        st.success("✅ Feature scaling completed!")
+                        logger.info("Feature scaling applied successfully.")
+
+                except Exception as e:
+                    st.error(f"❌ Scaling failed: {str(e)}")
+                    logger.error(f"Feature scaling error: {str(e)}\n{traceback.format_exc()}")
+
+        st.markdown("### 📊 Preview of Scaled Data")
         st.dataframe(st.session_state.preprocessed_df.head(), use_container_width=True)
 
     # 5️⃣ Categorical Encoding
     with st.expander(f"5️⃣ Encode Categorical Features {'✅' if st.session_state.preprocessing_steps_completed.get('encoding', False) else '❌'}"):
         st.write("Automatically detect categorical types (binary, nominal, ordinal, high-cardinality) and apply selected encoding strategy.")
 
-        # Get categorical columns excluding target if it's categorical
-        current_categorical_cols = st.session_state.preprocessed_df.select_dtypes(include=['object', 'category', 'bool']).columns.tolist()
-        if st.session_state.selected_target in current_categorical_cols:
-            current_categorical_cols.remove(st.session_state.selected_target)
+        df = st.session_state.preprocessed_df.copy()
+        target_col = st.session_state.get('selected_target', None)
+        X, y = separate_features_and_target(df, target_col)
+
+        current_categorical_cols = X.select_dtypes(include=['object', 'category', 'bool']).columns.tolist()
 
         if current_categorical_cols:
-            # Show feature summary
+            # Step 1: Feature summary
             st.subheader("Categorical Feature Analysis")
             feature_summary = {}
             for col in current_categorical_cols:
-                unique_vals = st.session_state.preprocessed_df[col].dropna().unique()
+                unique_vals = X[col].dropna().unique()
                 feature_summary[col] = {
                     "#Unique": len(unique_vals),
                     "Values": unique_vals.tolist()[:5] + (["..."] if len(unique_vals) > 5 else [])
                 }
             st.dataframe(pd.DataFrame(feature_summary).T)
 
-            # Define mapping UI
+            # Step 2: Optional ordinal mapping
             st.subheader("Define Ordinal Mappings (Optional)")
             selected_ordinal_col = st.selectbox(
                 "Select a categorical column to define ordinal mapping:",
@@ -934,9 +818,10 @@ def main():
 
             if selected_ordinal_col != "None":
                 st.write(f"Define mapping for **'{selected_ordinal_col}'** (e.g., Small:1, Medium:2, Large:3)")
+                default_map_str = ", ".join([f"{k}:{v}" for k, v in AppSettings.ORDINAL_FEATURES_MAP.get(selected_ordinal_col, {}).items()])
                 mapping_input = st.text_area(
                     "Enter mapping as `category1:value1, category2:value2` (comma-separated):",
-                    value=", ".join([f"{k}:{v}" for k, v in AppSettings.ORDINAL_FEATURES_MAP.get(selected_ordinal_col, {}).items()]),
+                    value=default_map_str,
                     key=f"ordinal_map_input_{selected_ordinal_col}"
                 )
 
@@ -954,175 +839,147 @@ def main():
                 except Exception as e:
                     st.error(f"Invalid mapping format: {e}. Use category:value format.")
 
-            # Select encoding strategies
+            # Step 3: Encoding strategy settings
             st.subheader("Encoding Strategy Settings")
             strategy = st.selectbox("High Cardinality Strategy:", ["frequency", "none"])
             handle_unknown = st.selectbox("Handle Unknown Categories:", ["ignore", "error"])
             max_cardinality = st.slider("Max Cardinality Threshold", 10, 100, 20)
 
             if st.button("🚀 Apply Categorical Encoding", key="apply_encoding"):
-                st.session_state.data_snapshots['before_encoding'] = st.session_state.preprocessed_df.copy()
+                st.session_state.data_snapshots['before_encoding'] = df.copy()
 
                 with st.spinner("Applying categorical encoding..."):
-                    # Separate features and target
-                    df = st.session_state.preprocessed_df.copy()
-                    target_col = st.session_state.get('selected_target', None)
-                    
-                    if target_col and target_col in df.columns:
-                        features_df = df.drop(columns=[target_col])
-                        target_df = df[[target_col]]
-                    else:
-                        features_df = df.copy()
-                        target_df = pd.DataFrame(index=df.index)
-                    
-                    # Apply encoding to features only
-                    encoder = CategoricalEncoder(
-                        ordinal_features_map=AppSettings.ORDINAL_FEATURES_MAP,
-                        high_cardinality_strategy=strategy,
-                        handle_unknown=handle_unknown,
-                        max_cardinality=max_cardinality
-                    )
-                    encoded_features_df = encoder.fit_transform(features_df)
-                    
-                    # Recombine with target
-                    if not target_df.empty:
-                        encoded_df = pd.concat([encoded_features_df, target_df], axis=1)
-                    else:
-                        encoded_df = encoded_features_df
-                    
-                    st.session_state.preprocessed_df = encoded_df
-                    st.session_state.fitted_preprocessing_components['categorical_encoder'] = encoder
-                    st.session_state.preprocessing_steps_completed['encoding'] = True
+                    try:
+                        encoder = CategoricalEncoder(
+                            ordinal_features_map=AppSettings.ORDINAL_FEATURES_MAP,
+                            high_cardinality_strategy=strategy,
+                            handle_unknown=handle_unknown,
+                            max_cardinality=max_cardinality
+                        )
 
-                    st.success("Categorical encoding completed!")
-                    st.write("Feature types detected:")
-                    st.json({
-                        "binary": encoder.binary_features,
-                        "ordinal": encoder.ordinal_features,
-                        "nominal": encoder.nominal_features,
-                        "high_cardinality": encoder.high_cardinality_features
-                    })
+                        X_encoded = encoder.fit_transform(X)
+                        X_encoded.index = X.index
+
+                        st.session_state.preprocessed_df = recombine_features_and_target(X_encoded, y)
+                        st.session_state.fitted_preprocessing_components['categorical_encoder'] = encoder
+                        st.session_state.preprocessing_steps_completed['encoding'] = True
+
+                        st.success("✅ Categorical encoding completed!")
+                        st.json({
+                            "binary": encoder.binary_features,
+                            "ordinal": encoder.ordinal_features,
+                            "nominal": encoder.nominal_features,
+                            "high_cardinality": encoder.high_cardinality_features
+                        })
+                    except Exception as e:
+                        st.error(f"❌ Encoding failed: {str(e)}")
+                        logger.error(f"Categorical encoding error: {str(e)}\n{traceback.format_exc()}")
 
         else:
-            st.info("No categorical columns found in the dataset (excluding target variable).")
+            st.info("ℹ️ No categorical columns found in the dataset (excluding target variable).")
 
-        if 'preprocessed_df' in st.session_state:
-            st.write("**Data Preview after Encoding:**")
-            st.dataframe(st.session_state.preprocessed_df.head(), use_container_width=True)
+        st.markdown("### 📊 Preview of Encoded Data")
+        st.dataframe(st.session_state.preprocessed_df.head(), use_container_width=True)
 
-    # ⬇️ Place this inside your Streamlit app where multicollinearity reduction is handled
 
     # 6️⃣ Multicollinearity Reduction
-    with st.expander(f"6️⃣ Reduce Multicollinearity {'✅' if st.session_state.preprocessing_steps_completed['multicollinearity'] else '❌'}", expanded=False):
+    with st.expander(f"6️⃣ Reduce Multicollinearity {'✅' if st.session_state.preprocessing_steps_completed.get('multicollinearity', False) else '❌'}", expanded=False):
         st.markdown("Identify and remove highly correlated numerical features to reduce multicollinearity. Choose between **VIF**-based filtering and optional **correlation-based** pruning.")
 
+        df = st.session_state.preprocessed_df.copy()
+        target_col = st.session_state.get('selected_target', None)
+        X, y = separate_features_and_target(df, target_col)
+
         # ── Parameter controls ──
-        col1, col2 = st.columns([2, 2])
+        col1, col2 = st.columns(2)
         vif_threshold = col1.slider("VIF Threshold", 1.0, 10.0, value=5.0, step=0.1)
         use_correlation = col2.checkbox("Use Correlation Elimination", value=False)
 
         if use_correlation:
             corr_threshold = st.slider("Correlation Threshold (absolute)", 0.5, 1.0, value=0.8, step=0.01)
         else:
-            corr_threshold = 0.8  # fallback
+            corr_threshold = 0.8
 
         # 🚀 Apply button
         if st.button("🚀 Apply Multicollinearity Reduction", key="apply_multicollinearity"):
-            st.session_state.data_snapshots['before_multicollinearity'] = st.session_state.preprocessed_df.copy()
+            st.session_state.data_snapshots['before_multicollinearity'] = df.copy()
 
             with st.spinner("Reducing multicollinearity..."):
-                df = st.session_state.preprocessed_df.copy()
-                target_col = st.session_state.get('selected_target', None)
+                try:
+                    mc_reducer = MulticollinearityReducer(
+                        vif_threshold=vif_threshold,
+                        use_correlation=use_correlation,
+                        corr_threshold=corr_threshold,
+                        handle_missing='drop',
+                        verbose=False
+                    )
 
-                if target_col and target_col in df.columns:
-                    features_df = df.drop(columns=[target_col])
-                    target_df = df[[target_col]]
-                else:
-                    features_df = df.copy()
-                    target_df = pd.DataFrame(index=df.index)
+                    X_reduced = mc_reducer.fit_transform(X)
+                    X_reduced.index = X.index
 
-                # Initialize reducer
-                mc_reducer = MulticollinearityReducer(
-                    vif_threshold=vif_threshold,
-                    use_correlation=use_correlation,
-                    corr_threshold=corr_threshold,
-                    handle_missing='drop',
-                    verbose=False
-                )
+                    st.session_state.preprocessed_df = recombine_features_and_target(X_reduced, y)
+                    st.session_state.fitted_preprocessing_components['multicollinearity_reducer'] = mc_reducer
+                    st.session_state.preprocessing_steps_completed['multicollinearity'] = True
 
-                # Fit-transform
-                reduced_features_df = mc_reducer.fit_transform(features_df)
+                    st.success("✅ Multicollinearity reduction completed!")
 
-                # Combine with target if present
-                reduced_df = pd.concat([reduced_features_df, target_df], axis=1) if not target_df.empty else reduced_features_df
+                    eliminated = mc_reducer.get_eliminated_features()
+                    selected = mc_reducer.get_selected_features()
 
-                # Update state
-                st.session_state.preprocessed_df = reduced_df
-                st.session_state.fitted_preprocessing_components['multicollinearity_reducer'] = mc_reducer
-                st.session_state.preprocessing_steps_completed['multicollinearity'] = True
+                    if eliminated:
+                        st.warning(f"🧹 Eliminated features ({len(eliminated)}):")
+                        st.code(", ".join(eliminated), language='text')
+                    else:
+                        st.info("✅ No features were eliminated at the selected thresholds.")
 
-                st.success("✅ Multicollinearity reduction completed!")
+                    if selected:
+                        st.success(f"🎯 Selected features retained ({len(selected)}):")
+                        st.code(", ".join(selected), language='text')
 
-                # Show eliminated features
-                eliminated = mc_reducer.get_eliminated_features()
-                selected = mc_reducer.get_selected_features()
+                    with st.expander("🧾 Detailed Reduction Summary"):
+                        st.code(mc_reducer.summary(), language='text')
 
-                if eliminated:
-                    st.warning(f"🧹 Eliminated features due to multicollinearity ({len(eliminated)}):")
-                    st.code(", ".join(eliminated), language='text')
-                else:
-                    st.info("✅ No features were eliminated at the selected thresholds.")
-
-                # Show selected features
-                if selected:
-                    st.success(f"🎯 Selected features retained after reduction ({len(selected)}):")
-                    st.code(", ".join(selected), language='text')
-
-                # Summary
-                with st.expander("🧾 Detailed Reduction Summary"):
-                    st.code(mc_reducer.summary(), language='text')
+                except Exception as e:
+                    st.error(f"❌ Failed to reduce multicollinearity: {str(e)}")
+                    logger.error(f"Multicollinearity reduction failed: {str(e)}\n{traceback.format_exc()}")
 
         # Final preview
         st.markdown("### 📊 Preview of Reduced Data")
         st.dataframe(st.session_state.preprocessed_df.head(), use_container_width=True)
 
-
     # --- Feature Engineering Section ---
     with st.expander(f"7️⃣ Feature Engineering {'✅' if st.session_state.preprocessing_steps_completed.get('feature_engineering', False) else '❌'}"):
         st.write("Perform advanced feature engineering steps like PCA, custom feature creation, and selection to optimize your dataset for modeling.")
 
+        df = st.session_state.preprocessed_df.copy()
+        target_col = st.session_state.get('selected_target')
+        X, y = separate_features_and_target(df, target_col)
+
+        # --- 7a. Feature Extraction (PCA) ---
         st.subheader("7a. Feature Extraction (PCA)")
         st.info("Reduce the dimensionality of your numeric data using Principal Component Analysis (PCA).")
-        
-        # Use a slider for better visual interaction for component selection
+
         pca_n_components = st.slider(
             "Number of PCA Components (0 for automatic, -1 for all, 1+ for specific):",
-            min_value=-1, # -1 for all components, 0 for auto, 1+ for specific
-            max_value=min(st.session_state.preprocessed_df.select_dtypes(include=np.number).shape[1], 10), # Max up to 10 for slider, adjust as needed
+            min_value=-1,
+            max_value=min(X.select_dtypes(include=np.number).shape[1], 10),
             value=2,
             step=1,
-            key="pca_n_components_slider", # Changed key for clarity
+            key="pca_n_components_slider",
             help="Set to 0 for automatic selection (explained variance), -1 to keep all components, or specify a number."
         )
-        
-        # Map slider value to actual n_components for PCA
-        n_components_for_pca = None
-        if pca_n_components == 0:
-            n_components_for_pca = None # For automatic variance explained
-        elif pca_n_components == -1:
-            n_components_for_pca = None # Keep all components (PCA's default behavior for None)
-        else:
-            n_components_for_pca = pca_n_components
 
         apply_pca = st.button("🚀 Apply PCA", key="apply_pca_button")
 
+        # --- 7b. Custom Feature Creation ---
         st.subheader("7b. Feature Creation")
         st.info("Generate new features from existing numeric columns (e.g., sum, mean, product).")
         apply_feature_creation = st.button("🚀 Create Custom Features", key="apply_feature_creation_button")
 
+        # --- 7c. Feature Selection ---
         st.subheader("7c. Feature Selection")
         st.info("Select the most relevant features to improve model performance and reduce noise.")
-        
+
         selection_strategy = st.selectbox(
             "Selection Strategy",
             options=["univariate", "variance", "correlation"],
@@ -1130,15 +987,14 @@ def main():
             key="feature_selection_strategy_select",
             help="Choose a strategy: 'univariate' (statistical tests), 'variance' (low variance removal), 'correlation' (correlation with target)."
         )
-        
-        # Conditional input for threshold based on strategy
+
         selection_threshold = None
         if selection_strategy == "variance":
             selection_threshold = st.number_input(
                 "Variance Threshold:",
                 min_value=0.0,
                 max_value=1.0,
-                value=0.01, # A more common default for variance threshold
+                value=0.01,
                 step=0.001,
                 format="%.3f",
                 key="variance_threshold_input",
@@ -1153,351 +1009,201 @@ def main():
                 step=0.01,
                 format="%.2f",
                 key="correlation_threshold_input",
-                help="Features with absolute correlation to the target below this threshold will be removed. Requires a target variable."
+                help="Features with absolute correlation to the target below this threshold will be removed."
             )
-        
+
         apply_feature_selection = st.button("🚀 Apply Feature Selection", key="apply_feature_selection_button")
 
-        # --- Action Logic for Feature Engineering ---
+        # --- Action Logic ---
         if apply_pca:
-            st.session_state.data_snapshots['before_feature_engineering_extraction'] = st.session_state.preprocessed_df.copy()
-            with st.spinner("Applying PCA for feature extraction..."):
-                numeric_df = st.session_state.preprocessed_df.select_dtypes(include=np.number)
-
-                if numeric_df.empty:
-                    st.error("❌ No numeric columns found in your dataset for PCA. Please ensure your data has numeric features after previous steps.")
-                else:
-                    try:
-                        non_numeric_df = st.session_state.preprocessed_df.select_dtypes(exclude=np.number)
-                        pca_extractor = FeatureExtractor(n_components=n_components_for_pca)
-                        pca_features_df = pca_extractor.fit_transform(numeric_df)
-
-                        st.session_state.preprocessed_df = pd.concat([pca_features_df, non_numeric_df], axis=1)
-                        st.session_state.fitted_preprocessing_components['pca_extractor'] = pca_extractor
-                        st.session_state.preprocessing_steps_completed['feature_engineering'] = False # Mark as not fully complete until all steps are done or user confirms
-                        st.success(f"✅ PCA applied! {pca_features_df.shape[1]} new principal components created.")
-                        logger.info("✅ PCA applied.")
-                    except Exception as e:
-                        st.error(f"❌ PCA failed: {str(e)}")
-                        logger.error(f"PCA failed: {str(e)}\n{traceback.format_exc()}")
+            st.session_state.data_snapshots['before_feature_engineering_pca'] = df.copy()
+            with st.spinner("Applying PCA..."):
+                try:
+                    numeric_X = X.select_dtypes(include=np.number)
+                    if numeric_X.empty:
+                        st.error("❌ No numeric columns available for PCA.")
+                    else:
+                        pca = FeatureExtractor(n_components=(None if pca_n_components in [0, -1] else pca_n_components))
+                        X_pca = pca.fit_transform(numeric_X)
+                        X_pca.index = X.index
+                        non_numeric_X = X.select_dtypes(exclude=np.number)
+                        X_combined = pd.concat([X_pca, non_numeric_X], axis=1)
+                        st.session_state.preprocessed_df = recombine_features_and_target(X_combined, y)
+                        st.session_state.fitted_preprocessing_components['pca_extractor'] = pca
+                        st.session_state.preprocessing_steps_completed['feature_engineering'] = False
+                        st.success(f"✅ PCA applied! {X_pca.shape[1]} components created.")
+                except Exception as e:
+                    st.error(f"❌ PCA failed: {str(e)}")
+                    logger.error(traceback.format_exc())
 
         if apply_feature_creation:
-            st.session_state.data_snapshots['before_feature_engineering_creation'] = st.session_state.preprocessed_df.copy()
+            st.session_state.data_snapshots['before_feature_engineering_creation'] = df.copy()
             with st.spinner("Creating custom features..."):
                 try:
-                    feature_creator = FeatureCreator()
-                    # Assuming fit_transform in FeatureCreator now returns (transformed_df, new_features_list)
-                    st.session_state.preprocessed_df, new_features = feature_creator.fit_transform(st.session_state.preprocessed_df)
-
-                    st.session_state.fitted_preprocessing_components['feature_creator'] = feature_creator
+                    creator = FeatureCreator()
+                    X_created, new_features = creator.fit_transform(X)
+                    X_created.index = X.index
+                    st.session_state.preprocessed_df = recombine_features_and_target(X_created, y)
+                    st.session_state.fitted_preprocessing_components['feature_creator'] = creator
+                    st.session_state.preprocessing_steps_completed['feature_engineering'] = False
                     if new_features:
-                        st.session_state.preprocessing_steps_completed['feature_engineering'] = False
-                        st.success(f"✅ Custom features created: {', '.join(new_features)}")
-                        logger.info(f"New features: {new_features}")
+                        st.success(f"✅ Created features: {', '.join(new_features)}")
                     else:
-                        st.info("ℹ️ No new custom features were created. This might happen if there are not enough suitable numeric columns.")
+                        st.info("ℹ️ No new features created. Possibly due to unsuitable input.")
                 except Exception as e:
                     st.error(f"❌ Feature creation failed: {str(e)}")
-                    logger.error(f"Feature creation failed: {str(e)}\n{traceback.format_exc()}")
+                    logger.error(traceback.format_exc())
 
         if apply_feature_selection:
-            st.session_state.data_snapshots['before_feature_engineering_selection'] = st.session_state.preprocessed_df.copy()
+            st.session_state.data_snapshots['before_feature_engineering_selection'] = df.copy()
             with st.spinner("Applying feature selection..."):
                 try:
-                    df = st.session_state.preprocessed_df.copy()
+                    X_numeric = X.select_dtypes(include=np.number)
 
-                    target_col = st.session_state.get('selected_target')
+                    if X_numeric.isnull().values.any():
+                        imputer = SimpleImputer(strategy='mean')
+                        X_numeric = pd.DataFrame(imputer.fit_transform(X_numeric), columns=X_numeric.columns, index=X_numeric.index)
+                        if y is not None:
+                            y = y.loc[X_numeric.index]
 
-                    if (selection_strategy in ["univariate", "correlation"]) and (not target_col or target_col not in df.columns):
-                        st.warning(f"⚠️ Target variable is required for '{selection_strategy}' feature selection. Please select a target variable first.")
+                    if X_numeric.empty:
+                        st.error("❌ No numeric features available for selection.")
                     else:
-                       # X = df.drop(columns=[target_col]) if target_col and target_col in df.columns else df.copy()
-                       # y = df[target_col] if target_col and target_col in df.columns else None
-
-                        #X_numeric = X.select_dtypes(include=np.number)
-
-                        if X_numeric.isnull().values.any():
-                            imputer = SimpleImputer(strategy='mean')
-                            X_numeric = pd.DataFrame(imputer.fit_transform(X_numeric), columns=X_numeric.columns, index=X_numeric.index)
-                            if y is not None:
-                                # Align y with X_numeric after imputation if rows were dropped
-                                y = y.loc[X_numeric.index]
-
-                        if X_numeric.empty:
-                            st.error("❌ No numeric columns available for feature selection.")
-                        else:
-                            feature_selector = FeatureSelector(
-                                strategy=selection_strategy,
-                                threshold=selection_threshold if selection_threshold is not None else 0.0 # Pass the threshold if defined
-                            )
-                            
-                            selected_X = feature_selector.fit_transform(X_numeric, y) # Pass y to fit_transform
-
-                            # Recombine with non-numeric and target columns
-                            non_numeric_cols = df.select_dtypes(exclude=np.number).columns.tolist()
-                            final_df_components = [selected_X]
-                            if non_numeric_cols:
-                                final_df_components.append(df[non_numeric_cols])
-                            if target_col and target_col in df.columns:
-                                final_df_components.append(df[[target_col]])
-
-                            st.session_state.preprocessed_df = pd.concat(final_df_components, axis=1)
-                            st.session_state.fitted_preprocessing_components['feature_selector'] = feature_selector
-                            st.session_state.preprocessing_steps_completed['feature_engineering'] = True # Mark as complete after selection
-                            st.success(f"✅ Feature selection complete. Kept {selected_X.shape[1]} features (plus non-numeric and target if applicable).")
-                            logger.info("✅ Feature selection completed.")
-
+                        selector = FeatureSelector(strategy=selection_strategy, threshold=selection_threshold or 0.0)
+                        X_selected = selector.fit_transform(X_numeric, y if selection_strategy != "variance" else None)
+                        X_selected.index = X.index
+                        X_combined = pd.concat([X_selected, X.select_dtypes(exclude=np.number)], axis=1)
+                        st.session_state.preprocessed_df = recombine_features_and_target(X_combined, y)
+                        st.session_state.fitted_preprocessing_components['feature_selector'] = selector
+                        st.session_state.preprocessing_steps_completed['feature_engineering'] = True
+                        st.success(f"✅ Feature selection complete. Remaining features: {X_selected.shape[1]}")
                 except Exception as e:
                     st.error(f"❌ Feature selection failed: {str(e)}")
-                    logger.error(f"Feature selection failed: {str(e)}\n{traceback.format_exc()}")
-
-        # --- Final Preview ---
-        st.divider() # A visual separator
-        st.markdown("### 📊 Current Data Preview After Feature Engineering")
-        if not st.session_state.preprocessed_df.empty:
-            st.dataframe(st.session_state.preprocessed_df.head(), use_container_width=True)
-            st.write(f"Current Data Shape: {st.session_state.preprocessed_df.shape[0]} rows, {st.session_state.preprocessed_df.shape[1]} columns")
-            st.write(f"Columns: {', '.join(st.session_state.preprocessed_df.columns.tolist())}")
-        else:
-            st.info("No data available for preview. Please ensure data is loaded and preprocessing steps are applied.")
+                    logger.error(traceback.format_exc())
 
 
-    # --- Download and Save Section ---
-    st.markdown("---")
-    st.subheader("💾 Data with Selected Preprocessed Features, Ready for Model Training.")
-
-    # Generate timestamped filename
+    # --- Generate timestamp once ---
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    # Create expandable section for export options
+    # --- Download Preprocessed Dataset ---
+    st.markdown("---")
+    st.subheader("💾 Download Preprocessed Dataset")
+
     with st.expander("📤 Export Options", expanded=True):
         export_format = st.radio(
             "Select export format:",
-            options=["CSV", "Excel", "JSON", "Parquet"],
+            options=["CSV", "Excel", "JSON", "Parquet", "TXT"],
             horizontal=True
         )
 
+        # Format-specific options
         if export_format == "CSV":
-            csv_options = st.columns(2)
-            with csv_options[0]:
-                csv_index = st.checkbox("Include index", value=False, key="csv_index")
-            with csv_options[1]:
-                csv_encoding = st.selectbox(
-                    "Encoding",
-                    options=["utf-8", "latin1", "utf-16"],
-                    index=0,
-                    key="csv_encoding"
-                )
-
+            index_opt = st.checkbox("Include index", value=False, key="csv_index")
+            encoding = st.selectbox("Encoding", ["utf-8", "latin1", "utf-16"], index=0)
         elif export_format == "Excel":
-            excel_options = st.columns(2)
-            with excel_options[0]:
-                excel_index = st.checkbox("Include index", value=False, key="excel_index")
-            with excel_options[1]:
-                excel_sheet = st.text_input("Sheet name", value="Sheet1", key="excel_sheet")
+            index_opt = st.checkbox("Include index", value=False, key="excel_index")
+            sheet_name = st.text_input("Sheet name", value="Sheet1")
+        elif export_format == "TXT":
+            index_opt = st.checkbox("Include index", value=False, key="txt_index")
+            encoding = st.selectbox("Encoding", ["utf-8", "latin1", "utf-16"], index=0)
+            separator = st.text_input("Separator", value="\t")
 
-        download_filename = st.text_input(
-            "Filename",
-            value=f"preprocessed_data_{timestamp}.{export_format.lower()}",
-            key="download_filename"
-        )
+        filename = st.text_input("Filename", value=f"preprocessed_data_{timestamp}.{export_format.lower()}")
 
-        if st.button(f"⬇️ Download as {export_format}", key=f"download_{export_format}"):
+        if st.button(f"⬇️ Download as {export_format}"):
             try:
+                df = st.session_state.preprocessed_df
                 if export_format == "CSV":
-                    csv = st.session_state.preprocessed_df.to_csv(index=csv_index).encode(csv_encoding)
-                    st.download_button(
-                        label="Confirm Download CSV",
-                        data=csv,
-                        file_name=download_filename,
-                        mime="text/csv",
-                        key="confirm_download_csv"
-                    )
+                    data = df.to_csv(index=index_opt).encode(encoding)
+                    mime = "text/csv"
                 elif export_format == "Excel":
-                    excel_buffer = BytesIO()
-                    with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
-                        st.session_state.preprocessed_df.to_excel(
-                            writer,
-                            sheet_name=excel_sheet,
-                            index=excel_index
-                        )
-                    excel_buffer.seek(0)  # IMPORTANT
-                    st.download_button(
-                        label="⬇️ Download Excel",
-                        data=excel_buffer.getvalue(),
-                        file_name=download_filename if download_filename.endswith('.xlsx') else download_filename + '.xlsx',
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="confirm_download_excel"
-                    )
-
+                    buffer = BytesIO()
+                    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+                        df.to_excel(writer, sheet_name=sheet_name, index=index_opt)
+                    buffer.seek(0)
+                    data, mime = buffer.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 elif export_format == "JSON":
-                    json_data = st.session_state.preprocessed_df.to_json(orient='records')
-                    st.download_button(
-                        label="Confirm Download JSON",
-                        data=json_data,
-                        file_name=download_filename,
-                        mime="application/json",
-                        key="confirm_download_json"
-                    )
-
+                    data = df.to_json(orient="records").encode("utf-8")
+                    mime = "application/json"
                 elif export_format == "Parquet":
-                    parquet_buffer = BytesIO()
-                    st.session_state.preprocessed_df.to_parquet(parquet_buffer)
-                    st.download_button(
-                        label="Confirm Download Parquet",
-                        data=parquet_buffer.getvalue(),
-                        file_name=download_filename,
-                        mime="application/octet-stream",
-                        key="confirm_download_parquet"
-                                    )
+                    buffer = BytesIO()
+                    df.to_parquet(buffer)
+                    data, mime = buffer.getvalue(), "application/octet-stream"
                 elif export_format == "TXT":
-                    txt_options = st.columns(2)
-                    with txt_options[0]:
-                        txt_index = st.checkbox("Include index", value=False, key="txt_index")
-                    with txt_options[1]:
-                        txt_encoding = st.selectbox(
-                            "Encoding",
-                            options=["utf-8", "latin1", "utf-16"],
-                            index=0,
-                            key="txt_encoding"
-                        )
-                    txt_separator = st.text_input("Separator", value="\t", key="txt_separator", help="Enter the character(s) to use as a column separator (e.g., ',' for CSV, '\\t' for tab-separated).")
-            
+                    data = df.to_csv(index=index_opt, sep=separator).encode(encoding)
+                    mime = "text/plain"
+
+                st.download_button(
+                    label=f"✅ Confirm Download {export_format}",
+                    data=data,
+                    file_name=filename,
+                    mime=mime
+                )
             except Exception as e:
-                st.error(f"Export failed: {str(e)}")
-                logger.error(f"Export error: {str(e)}\n{traceback.format_exc()}")
+                st.error(f"Export failed: {e}")
+                logger.error(traceback.format_exc())
 
-        if st.button("📊 Visualize Processed Data (EDA2)"):
-            if 'preprocessed_df' in st.session_state and not st.session_state.preprocessed_df.empty:
-                st.session_state['raw2_df'] = st.session_state.preprocessed_df.copy()
-                st.session_state['current_page'] = 'Visualize'
-                st.switch_page("pages/4_Visualize.py")
-            else:
-                st.warning("No processed data available for visualization. Please complete preprocessing first.")
-
-    # # --- Save Pipeline ---
-    # if st.button("💾 Save Preprocessing Pipeline"):
-    #     try:
-    #         pipeline = {
-    #             'missing_value_handler': st.session_state.fitted_preprocessing_components.get('missing_value_handler'),
-    #             'outlier_detector': st.session_state.fitted_preprocessing_components.get('outlier_detector'),
-    #             'log_transformer': st.session_state.fitted_preprocessing_components.get('log_transformer'),
-    #             'feature_scaler': st.session_state.fitted_preprocessing_components.get('feature_scaler'),
-    #             'categorical_encoder': st.session_state.fitted_preprocessing_components.get('categorical_encoder'),
-    #             'multicollinearity_reducer': st.session_state.fitted_preprocessing_components.get('multicollinearity_reducer'),
-    #             'feature_creator': st.session_state.fitted_preprocessing_components.get('feature_creator'),
-    #             'feature_selector': st.session_state.fitted_preprocessing_components.get('feature_selector'),
-    #             'pca_extractor': st.session_state.fitted_preprocessing_components.get('pca_extractor'),
-    #             'settings': {
-    #                 'target_column': st.session_state.selected_target,
-    #                 'timestamp': timestamp
-    #             }
-    #         }
-
-    #         pipeline_filename = f"preprocessing_pipeline_{timestamp}.pkl"
-    #         with open(pipeline_filename, 'wb') as f:
-    #             pickle.dump(pipeline, f)
-
-    #         st.success(f"Pipeline saved successfully as {pipeline_filename}")
-    #         logger.info(f"Preprocessing pipeline saved to {pipeline_filename}")
-
-    #         pipeline_buffer = BytesIO()
-    #         pickle.dump(pipeline, pipeline_buffer)
-    #         pipeline_buffer.seek(0)
-    #         st.download_button(
-    #             label="⬇️ Download Pipeline (.pkl)",
-    #             data=pipeline_buffer,
-    #             file_name=pipeline_filename,
-    #             mime="application/octet-stream"
-    #         )
-
-    #     except Exception as e:
-    #         st.error(f"Failed to save pipeline: {str(e)}")
-    #         logger.error(f"Error saving pipeline: {str(e)}")
-
-        # --- Advanced Save Format Options ---
-
-# Generate timestamp
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
+    # --- Save Preprocessing Pipeline ---
     st.markdown("---")
-    st.subheader("🔧 Save Preprocessing Pipeline")
+    st.subheader("🔧 Save Preprocessing Pipeline for Inference")
 
     with st.expander("Pipeline Save Options", expanded=True):
         pipeline_format = st.radio(
-            "Select pipeline format:",
-            options=["TXT", "CSV", "Excel (XLSX)", "Excel (XLSB)", "JSON"],
-            horizontal=True,
-            key="pipeline_format_unique"
+            "Select format:",
+            options=["TXT", "CSV", "Excel", "JSON"],
+            horizontal=True
         )
 
-        if pipeline_format == "TXT":
-            txt_delimiter = st.text_input("Delimiter (e.g., , or \t)", value="\t", key="txt_delimiter_unique")
-        elif pipeline_format == "CSV":
-            csv_index_unique = st.checkbox("Include index", value=False, key="csv_index_unique")
-        elif pipeline_format == "Excel (XLSX)":
-            excel_index_unique = st.checkbox("Include index", value=False, key="excel_index_unique")
-            excel_sheet = st.text_input("Sheet name", value="Pipeline", key="excel_sheet_unique")
-        elif pipeline_format == "Excel (XLSB)":
-            excel_xlsb_index = st.checkbox("Include index", value=False, key="excel_xlsb_index_unique")
-            excel_xlsb_sheet = st.text_input("Sheet name", value="Pipeline", key="excel_xlsb_sheet_unique")
-        elif pipeline_format == "JSON":
-            json_indent = st.number_input("Indentation", min_value=0, max_value=8, value=2, help="Pretty print spaces", key="json_indent_unique")
+        filename_pipeline = st.text_input("Pipeline Filename", value=f"preprocessing_pipeline_{timestamp}")
 
-        pipeline_filename = st.text_input(
-            "Pipeline filename",
-            value=f"preprocessing_pipeline_{timestamp}",
-            key="pipeline_filename_unique"
-        )
+        if st.button("💾 Save Pipeline"):
+            try:
+                pipeline_data = pd.DataFrame({
+                    'Component': list(st.session_state.fitted_preprocessing_components.keys()),
+                    'Used': [str(v is not None) for v in st.session_state.fitted_preprocessing_components.values()]
+                })
 
-    if st.button("💾 Save Preprocessing Pipeline", key="save_pipeline_unique"):
+                buffer = BytesIO()
+                full_filename = f"{filename_pipeline}.{pipeline_format.lower()}"
+
+                if pipeline_format == "TXT":
+                    buffer.write(pipeline_data.to_csv(index=False, sep="\t").encode('utf-8'))
+                    mime = "text/plain"
+                elif pipeline_format == "CSV":
+                    buffer.write(pipeline_data.to_csv(index=False).encode('utf-8'))
+                    mime = "text/csv"
+                elif pipeline_format == "Excel":
+                    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+                        pipeline_data.to_excel(writer, sheet_name="Pipeline", index=False)
+                    buffer.seek(0)
+                    mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                elif pipeline_format == "JSON":
+                    json_data = pipeline_data.to_dict(orient="records")
+                    buffer.write(json.dumps(json_data, indent=2).encode('utf-8'))
+                    mime = "application/json"
+
+                buffer.seek(0)
+                st.success(f"Pipeline saved as {full_filename}")
+                st.download_button(
+                    label="⬇️ Download Pipeline",
+                    data=buffer,
+                    file_name=full_filename,
+                    mime=mime
+                )
+            except Exception as e:
+                st.error(f"Pipeline saving failed: {e}")
+                logger.error(traceback.format_exc())
+
+    # --- Trigger EDA2 ---
+    if st.button("📊 Visualize Processed Data (EDA2)"):
         try:
-            df_pipeline = pd.DataFrame({
-                'Component': list(st.session_state.fitted_preprocessing_components.keys()),
-                'Used': [str(v is not None) for v in st.session_state.fitted_preprocessing_components.values()]
-            })
-
-            full_filename = ""
-            buffer = BytesIO()
-
-            if pipeline_format == "TXT":
-                full_filename = f"{pipeline_filename}.txt"
-                content = df_pipeline.to_csv(index=False, sep=txt_delimiter)
-                buffer.write(content.encode('utf-8'))
-            elif pipeline_format == "CSV":
-                full_filename = f"{pipeline_filename}.csv"
-                content = df_pipeline.to_csv(index=csv_index_unique)
-                buffer.write(content.encode('utf-8'))
-            elif pipeline_format == "Excel (XLSX)":
-                full_filename = f"{pipeline_filename}.xlsx"
-                with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                    df_pipeline.to_excel(writer, sheet_name=excel_sheet, index=excel_index_unique)
-            elif pipeline_format == "Excel (XLSB)":
-                full_filename = f"{pipeline_filename}.xlsb"
-                import pyxlsb
-                import openpyxl
-                st.warning("Saving to .xlsb requires external tools or Windows-specific APIs. Currently not supported directly.")
-                raise NotImplementedError("Saving to .xlsb format is not implemented in this setup.")
-            elif pipeline_format == "JSON":
-                full_filename = f"{pipeline_filename}.json"
-                json_data = df_pipeline.to_dict(orient="records")
-                buffer.write(json.dumps(json_data, indent=json_indent).encode('utf-8'))
-
-            buffer.seek(0)
-
-            st.success(f"Pipeline saved successfully as {full_filename}")
-            st.download_button(
-                label=f"⬇️ Download Pipeline ({pipeline_format})",
-                data=buffer,
-                file_name=full_filename,
-                mime="text/plain" if pipeline_format == "TXT" else "application/octet-stream",
-                key=f"download_pipeline_{timestamp}"
-            )
-
+            if 'preprocessed_df' in st.session_state and not st.session_state.preprocessed_df.empty:
+                st.session_state['raw2_df'] = st.session_state.preprocessed_df.copy()
+                st.session_state['current_page'] = 'Visualize'
+                st.switch_page("/home/ippala001/Logistic_regression_main/src/interfaces/streamlit_app/pages/4_Visualize.py")
+            else:
+                st.warning("No processed data available. Please preprocess first.")
         except Exception as e:
-            st.error(f"Failed to save pipeline: {str(e)}")
-            st.error(traceback.format_exc())
-
-
+            st.error(f"Navigation failed: {e}")
 if __name__ == "__main__":
     main()
