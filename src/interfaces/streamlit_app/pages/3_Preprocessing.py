@@ -4,6 +4,10 @@ import numpy as np
 import os
 import pickle
 import traceback
+import json
+# Add these missing imports at the top
+from pathlib import Path
+import joblib  # For pipeline serialization
 
 import logging
 from typing import Optional, Tuple
@@ -18,6 +22,7 @@ import json
 from sklearn.impute import SimpleImputer
 
 
+from sklearn.pipeline import Pipeline as SklearnPipeline
 from src.core.preprocessing.log_transform import LogTransformer # For FeatureExtractor
 from src.core.preprocessing.missing_values import MissingValueHandler
 from src.core.preprocessing.outlier_detection import OutlierDetector, OutlierHandlingMethod, DetectionMethod 
@@ -98,7 +103,20 @@ def initialize_session_state():
             'before_feature_engineering_selection': None,
         }
     if 'fitted_preprocessing_components' not in st.session_state:
-        st.session_state.fitted_preprocessing_components = {}
+        st.session_state.fitted_preprocessing_components = {
+            'missing_value_handler': None,
+            'outlier_detector': None,
+            'log_transformer': None,
+            'feature_scaler': None,
+            'categorical_encoder': None,
+            'multicollinearity_reducer': None,
+            'pca_extractor': None,
+            'feature_selector': None
+        }
+    # Initialize pipeline
+    if 'fitted_preprocessing_pipeline' not in st.session_state:
+        st.session_state.fitted_preprocessing_pipeline = None
+        
     # Add these two lines to initialize outlier-related state variables
     if 'outlier_table' not in st.session_state:
         st.session_state.outlier_table = None
@@ -238,7 +256,17 @@ def main():
             'multicollinearity': False,
             'feature_engineering': False
         }
-        st.session_state.fitted_preprocessing_components = {}
+        st.session_state.fitted_preprocessing_components = {
+            'missing_value_handler': None,
+            'outlier_detector': None,
+            'log_transformer': None,
+            'feature_scaler': None,
+            'categorical_encoder': None,
+            'multicollinearity_reducer': None,
+            'pca_extractor': None,
+            'feature_selector': None
+        }
+        st.session_state.fitted_preprocessing_pipeline = None
         st.session_state.data_snapshots = {
             'initial': st.session_state.raw1_df.copy(),  # Re-capture initial state
             'before_missing_handling': None,
@@ -253,38 +281,108 @@ def main():
         }
         st.rerun()  # Rerun to reflect the reset state
 
+
     # --- Target Variable Selection ---
     st.markdown("---")
     st.subheader("🎯 Select Target Variable")
-    
+
     columns = st.session_state.preprocessed_df.columns.tolist()
     default_target_index = 0
+
     if AppSettings.TARGET_COLUMN in columns:
         default_target_index = columns.index(AppSettings.TARGET_COLUMN)
-    elif st.session_state.selected_target in columns:
-        default_target_index = columns.index(st.session_state.selected_target)
-        
-    st.session_state.selected_target = st.selectbox(
+    elif st.session_state.get("selected_target") in columns:
+        default_target_index = columns.index(st.session_state["selected_target"])
+
+    st.session_state["selected_target"] = st.selectbox(
         "Choose the target variable for your analysis:",
         columns,
         index=default_target_index,
         key="target_selector"
     )
 
-    if st.session_state.selected_target:
-        st.info(f"Target variable set to: **{st.session_state.selected_target}**")
-        if st.session_state.selected_target in st.session_state.preprocessed_df.columns:
-            st.session_state.X = st.session_state.preprocessed_df.drop(columns=[st.session_state.selected_target])
-            st.session_state.y = st.session_state.preprocessed_df[st.session_state.selected_target]
+    # Set X and y
+    if st.session_state["selected_target"]:
+        st.info(f"Target variable set to: **{st.session_state['selected_target']}**")
+        
+        if st.session_state["selected_target"] in st.session_state.preprocessed_df.columns:
+            st.session_state.X = st.session_state.preprocessed_df.drop(columns=[st.session_state["selected_target"]])
+            st.session_state.y = st.session_state.preprocessed_df[st.session_state["selected_target"]]
         else:
-            st.warning(f"Selected target column '{st.session_state.selected_target}' not found in the DataFrame. Please select another.")
+            st.warning(f"Selected target column '{st.session_state['selected_target']}' not found in the DataFrame. Please select another.")
             st.session_state.X = st.session_state.preprocessed_df.copy()
-            st.session_state.y = pd.Series([])  # Empty series
+            st.session_state.y = pd.Series([], dtype=object)
     else:
         st.warning("No target variable selected. Some preprocessing steps (like feature selection) might be limited.")
         st.session_state.X = st.session_state.preprocessed_df.copy()
-        st.session_state.y = pd.Series([])  # Empty series
+        st.session_state.y = pd.Series([], dtype=object)
+    # --- Save Button for Inference Features ---
+    st.markdown("---")
+    st.subheader("🧠 Inference Feature Saver")
 
+    if st.button("💾 Save Inference Features"):
+        FEATURE_SAVE_DIR = Path("/home/hari/Logistic_regression_main/src/models/infrence_features")
+        FEATURE_SAVE_DIR.mkdir(parents=True, exist_ok=True)
+
+        try:
+            df = st.session_state.X
+            inference_features = df.columns.tolist()
+
+            # Save plain feature list
+            feature_filename = f"inference_features_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            feature_path = FEATURE_SAVE_DIR / feature_filename
+
+            with open(feature_path, "w", encoding="utf-8") as f:
+                json.dump(inference_features, f, indent=2)
+
+            # --- Save schema with feature names and dtypes ---
+            schema_filename = f"inference_schema_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            schema_path = FEATURE_SAVE_DIR / schema_filename
+
+            schema = {
+                "features": [
+                    {"name": col, "dtype": str(df[col].dtype)}
+                    for col in inference_features
+                ]
+            }
+
+            with open(schema_path, "w", encoding="utf-8") as f:
+                json.dump(schema, f, indent=2)
+
+            # Save download-ready version to session
+            st.session_state['last_inference_feature_file'] = {
+                "filename": feature_filename,
+                "data": json.dumps(inference_features, indent=2)
+            }
+            st.session_state['last_inference_schema_file'] = {
+                "filename": schema_filename,
+                "data": json.dumps(schema, indent=2)
+            }
+
+            st.success(f"✅ Inference feature list saved to: `{feature_path}`")
+            st.success(f"✅ Inference schema saved to: `{schema_path}`")
+
+        except Exception as e:
+            st.error(f"❌ Failed to save inference features/schema: {e}")
+
+    # Show download buttons if files were saved
+    if 'last_inference_feature_file' in st.session_state:
+        st.download_button(
+            label="⬇️ Download Inference Feature List (JSON)",
+            data=st.session_state['last_inference_feature_file']['data'],
+            file_name=st.session_state['last_inference_feature_file']['filename'],
+            mime="application/json"
+        )
+
+    if 'last_inference_schema_file' in st.session_state:
+        st.download_button(
+            label="⬇️ Download Inference Feature Schema (JSON)",
+            data=st.session_state['last_inference_schema_file']['data'],
+            file_name=st.session_state['last_inference_schema_file']['filename'],
+            mime="application/json"
+        )
+
+    # --- Show Current Data Overview ---
     display_current_data_and_nan_details()
 
     # --- Preprocessing Steps ---
@@ -334,6 +432,7 @@ def main():
                 # Recombine and update state
                 st.session_state.preprocessed_df = recombine_features_and_target(X_transformed, y)
                 st.session_state.preprocessing_steps_completed['missing_values'] = True
+                st.session_state.fitted_preprocessing_components['missing_value_handler'] = mv_handler
 
                 st.success("✅ Missing values handled successfully!")
 
@@ -398,8 +497,6 @@ def main():
             st.write("### Current Data Preview (After last action in this section):")
             st.dataframe(st.session_state['preprocessed_df'].head(), use_container_width=True)
             show_nan_rows(st.session_state['preprocessed_df'], key_suffix="after_handling")
-
-
     # 2️⃣ Handle Outliers
     with st.expander(f"2️⃣ Handle Outliers {'✅' if st.session_state.preprocessing_steps_completed.get('outliers', False) else '❌'}", expanded=True):
         st.write("Detect and handle outliers using IQR or other methods. Preview, flag, or remove outliers from your dataset.")
@@ -486,6 +583,10 @@ def main():
                         )
                         detector.fit(numeric_X)
                         flagged_df = detector.transform(X.copy())
+                        st.session_state.fitted_preprocessing_components['outlier_handler'] = detector
+                        if 'fitted_preprocessing_components' not in st.session_state:
+                            st.session_state.fitted_preprocessing_components = {}
+                        st.session_state.fitted_preprocessing_components['outlier_handler'] = detector
 
                         st.session_state.preprocessed_df = recombine_features_and_target(flagged_df, y)
                         st.session_state.preprocessing_steps_completed['outliers'] = True
@@ -524,6 +625,12 @@ def main():
                     detector.fit(numeric_X)
                     cleaned_X = detector.transform(X.copy())
                     cleaned_y = y.loc[cleaned_X.index]
+                    st.session_state.fitted_preprocessing_components['outlier_handler'] = detector
+                    if 'fitted_preprocessing_components' not in st.session_state:
+                        st.session_state.fitted_preprocessing_components = {}
+                    st.session_state.fitted_preprocessing_components['outlier_handler'] = detector
+
+
 
                     st.session_state.preprocessed_df = recombine_features_and_target(cleaned_X, cleaned_y)
                     st.session_state.preprocessing_steps_completed['outliers'] = True
@@ -533,20 +640,19 @@ def main():
                 except Exception as e:
                     st.error(f"🚫 Removal failed: {e}")
                     logger.exception("Removal error")
-
-            # --- CLEANUP: DROP OUTLIER FLAGS ---
+            # --- CLEANUP: DROP OUTLIER FLAGS MANUALLY ---
             existing_cols = st.session_state.preprocessed_df.columns
-            flag_cols = [col for col in existing_cols if col.startswith('Outlier_Flag_')]
+            flag_cols = [col for col in existing_cols if col.startswith('Outlier_Flag')]
 
             if flag_cols:
-                st.markdown("### 🧹 Post-Outlier Handling Cleanup")
-                st.info(f"Outlier flag columns detected: {', '.join(flag_cols)}. You can remove them before proceeding.")
+                st.markdown("### 🧹 Manual Cleanup")
+                st.info(f"Outlier flag columns detected: {', '.join(flag_cols)}. You can remove them manually if needed.")
 
                 if st.button("🗑️ Drop Outlier Flag Columns", key="btn_drop_outlier_flags"):
                     st.session_state.preprocessed_df.drop(columns=flag_cols, inplace=True)
                     st.success("✅ Outlier flag columns removed successfully.")
 
-                    st.write("### ✅ Data After Cleanup:")
+                    st.write("### ✅ Data After Manual Cleanup:")
                     st.dataframe(st.session_state.preprocessed_df.head(), use_container_width=True)
                     st.caption(f"Data shape: {st.session_state.preprocessed_df.shape}")
 
@@ -557,6 +663,7 @@ def main():
                 st.dataframe(st.session_state.preprocessed_df.head(), use_container_width=True)
                 st.caption(f"Data shape: {st.session_state.preprocessed_df.shape}")
 
+                    
     # 3️⃣ Distribution Corrections: Skewness & Kurtosis
     with st.expander(f"3️⃣ Distribution Corrections: Skewness & Kurtosis {'✅' if st.session_state.preprocessing_steps_completed.get('log_transform', False) else '❌'}", expanded=False):
 
@@ -684,6 +791,7 @@ def main():
 
                 st.session_state.preprocessed_df = combined_df
                 st.session_state.preprocessing_steps_completed['log_transform'] = True
+                st.session_state.fitted_preprocessing_components['log_transformer'] = transformer
 
                 st.success(f"✅ Applied {log_method} transformation to {len(features_to_transform)} feature(s).")
 
@@ -946,8 +1054,7 @@ def main():
         # Final preview
         st.markdown("### 📊 Preview of Reduced Data")
         st.dataframe(st.session_state.preprocessed_df.head(), use_container_width=True)
-
-    # --- Feature Engineering Section ---
+# --- Feature Engineering Section ---
     with st.expander(f"7️⃣ Feature Engineering {'✅' if st.session_state.preprocessing_steps_completed.get('feature_engineering', False) else '❌'}"):
         st.write("Perform advanced feature engineering steps like PCA, custom feature creation, and selection to optimize your dataset for modeling.")
 
@@ -1081,7 +1188,6 @@ def main():
                     st.error(f"❌ Feature selection failed: {str(e)}")
                     logger.error(traceback.format_exc())
 
-
     # --- Generate timestamp once ---
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -1142,57 +1248,136 @@ def main():
             except Exception as e:
                 st.error(f"Export failed: {e}")
                 logger.error(traceback.format_exc())
+    if st.button("💾 Save Preprocessing Pipeline", key="save_pipeline_button"):
+        try:
+            # 🕒 Generate timestamped filename
+            filename_pipeline = f"pipeline_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            preprocessing_steps = []
 
-    # --- Save Preprocessing Pipeline ---
-    st.markdown("---")
-    st.subheader("🔧 Save Preprocessing Pipeline for Inference")
+            # 1. Missing Values
+            if (st.session_state.preprocessing_steps_completed.get('missing_values') and
+                'missing_value_handler' in st.session_state.fitted_preprocessing_components):
+                preprocessing_steps.append((
+                    'missing_value_imputer',
+                    st.session_state.fitted_preprocessing_components['missing_value_handler']
+                ))
 
-    with st.expander("Pipeline Save Options", expanded=True):
-        pipeline_format = st.radio(
-            "Select format:",
-            options=["TXT", "CSV", "Excel", "JSON"],
-            horizontal=True
-        )
+            # 2. Outliers
+            if (st.session_state.preprocessing_steps_completed.get('outliers') and
+                'outlier_handler' in st.session_state.fitted_preprocessing_components):
+                preprocessing_steps.append((
+                    'outlier_handler',
+                    st.session_state.fitted_preprocessing_components['outlier_handler']
+                ))
 
-        filename_pipeline = st.text_input("Pipeline Filename", value=f"preprocessing_pipeline_{timestamp}")
+            # 3. Log Transform
+            if (st.session_state.preprocessing_steps_completed.get('log_transform') and
+                'log_transformer' in st.session_state.fitted_preprocessing_components):
+                preprocessing_steps.append((
+                    'log_transform',
+                    st.session_state.fitted_preprocessing_components['log_transformer']
+                ))
 
-        if st.button("💾 Save Pipeline"):
+            # 4. Scaling
+            if (st.session_state.preprocessing_steps_completed.get('scaling') and
+                'feature_scaler' in st.session_state.fitted_preprocessing_components):
+                preprocessing_steps.append((
+                    'scaling',
+                    st.session_state.fitted_preprocessing_components['feature_scaler']
+                ))
+
+            # 5. Encoding
+            if (st.session_state.preprocessing_steps_completed.get('encoding') and
+                'categorical_encoder' in st.session_state.fitted_preprocessing_components):
+                preprocessing_steps.append((
+                    'encoding',
+                    st.session_state.fitted_preprocessing_components['categorical_encoder']
+                ))
+
+            # 6. Multicollinearity
+            if (st.session_state.preprocessing_steps_completed.get('multicollinearity') and
+                'multicollinearity_reducer' in st.session_state.fitted_preprocessing_components):
+                preprocessing_steps.append((
+                    'multicollinearity',
+                    st.session_state.fitted_preprocessing_components['multicollinearity_reducer']
+                ))
+
+            # 7. Feature Engineering — Order: PCA → Feature Creation → Feature Selection
+            if st.session_state.preprocessing_steps_completed.get("feature_engineering"):
+                # ➤ PCA
+                if "pca_extractor" in st.session_state.fitted_preprocessing_components:
+                    pca = st.session_state.fitted_preprocessing_components["pca_extractor"]
+                    preprocessing_steps.append(("pca", pca))
+
+                # ➤ Feature Creation
+                if "feature_creator" in st.session_state.fitted_preprocessing_components:
+                    feature_creator = st.session_state.fitted_preprocessing_components["feature_creator"]
+                    if not hasattr(feature_creator, 'original_features'):
+                        feature_creator.original_features = [
+                            "Pregnancies", "Glucose", "BloodPressure", "SkinThickness",
+                            "Insulin", "BMI", "DiabetesPedigreeFunction", "Age"
+                        ]
+                    preprocessing_steps.append(("feature_creation", feature_creator))
+
+                # ➤ Feature Selection
+                if "feature_selector" in st.session_state.fitted_preprocessing_components:
+                    feature_selector = st.session_state.fitted_preprocessing_components["feature_selector"]
+                    preprocessing_steps.append(("feature_selector", feature_selector))
+
+            # ✅ Create pipeline
+            pipeline = SklearnPipeline(preprocessing_steps)
+
+            # ➕ Set input schema (raw features)
+            pipeline.expected_input_features = [
+                "Pregnancies", "Glucose", "BloodPressure", "SkinThickness",
+                "Insulin", "BMI", "DiabetesPedigreeFunction", "Age"
+            ]
+
+            # ✅ Save pipeline
+            pipeline_dir = Path("src/models/pipeline")
+            pipeline_dir.mkdir(parents=True, exist_ok=True)
+            pipeline_path = pipeline_dir / f"{filename_pipeline}.pkl"
+            joblib.dump(pipeline, pipeline_path)
+            st.session_state['fitted_preprocessing_pipeline'] = pipeline
+
+            # ✅ Save processed schema
+            schema_dir = Path("src/models/preprocessed_features")
+            schema_dir.mkdir(parents=True, exist_ok=True)
+            processed_schema_path = schema_dir / "schema_processed_features.json"
+
             try:
-                pipeline_data = pd.DataFrame({
-                    'Component': list(st.session_state.fitted_preprocessing_components.keys()),
-                    'Used': [str(v is not None) for v in st.session_state.fitted_preprocessing_components.values()]
-                })
+                # Try from pipeline output
+                if hasattr(pipeline, "get_feature_names_out"):
+                    processed_features = list(pipeline.get_feature_names_out())
+                else:
+                    processed_features = list(st.session_state['preprocessed_df'].columns)
 
-                buffer = BytesIO()
-                full_filename = f"{filename_pipeline}.{pipeline_format.lower()}"
+                # ❌ Remove target column if present
+                target_col = st.session_state.get('selected_target')
+                if target_col in processed_features:
+                    processed_features.remove(target_col)
 
-                if pipeline_format == "TXT":
-                    buffer.write(pipeline_data.to_csv(index=False, sep="\t").encode('utf-8'))
-                    mime = "text/plain"
-                elif pipeline_format == "CSV":
-                    buffer.write(pipeline_data.to_csv(index=False).encode('utf-8'))
-                    mime = "text/csv"
-                elif pipeline_format == "Excel":
-                    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                        pipeline_data.to_excel(writer, sheet_name="Pipeline", index=False)
-                    buffer.seek(0)
-                    mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                elif pipeline_format == "JSON":
-                    json_data = pipeline_data.to_dict(orient="records")
-                    buffer.write(json.dumps(json_data, indent=2).encode('utf-8'))
-                    mime = "application/json"
+            except Exception:
+                target_col = st.session_state.get('selected_target')
+                processed_features = [
+                    col for col in st.session_state.get('preprocessed_df', pd.DataFrame()).columns
+                    if col != target_col
+                ]
 
-                buffer.seek(0)
-                st.success(f"Pipeline saved as {full_filename}")
-                st.download_button(
-                    label="⬇️ Download Pipeline",
-                    data=buffer,
-                    file_name=full_filename,
-                    mime=mime
-                )
-            except Exception as e:
-                st.error(f"Pipeline saving failed: {e}")
-                logger.error(traceback.format_exc())
+            # Write to file
+            with open(processed_schema_path, "w") as f:
+                json.dump(processed_features, f)
+
+            # ✅ Feedback
+            st.success(f"✅ Pipeline saved to: {pipeline_path}")
+            st.info(f"✅ Processed feature schema saved to: {processed_schema_path}")
+
+        except Exception as e:
+            st.error(f"❌ Pipeline save failed: {str(e)}")
+            logger.error(traceback.format_exc())
+
+
+
 
     # --- Trigger EDA2 ---
     if st.button("📊 Visualize Processed Data (EDA2)"):
@@ -1200,10 +1385,12 @@ def main():
             if 'preprocessed_df' in st.session_state and not st.session_state.preprocessed_df.empty:
                 st.session_state['raw2_df'] = st.session_state.preprocessed_df.copy()
                 st.session_state['current_page'] = 'Visualize'
-                st.switch_page("/home/ippala001/Logistic_regression_main/src/interfaces/streamlit_app/pages/4_Visualize.py")
+                st.switch_page("pages/4_Visualize.py")
             else:
                 st.warning("No processed data available. Please preprocess first.")
         except Exception as e:
             st.error(f"Navigation failed: {e}")
+
+# Entry point
 if __name__ == "__main__":
     main()

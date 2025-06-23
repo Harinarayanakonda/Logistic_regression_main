@@ -9,9 +9,8 @@ from src.utils.logging import logger
 
 logger.info("Loading Upload page.")
 
-# Cleanup function to remove saved data when app closes
+# Cleanup on exit
 def cleanup_saved_data():
-    """Remove all saved raw datasets when app exits"""
     raw_dir = Path("data/01_raw")
     if raw_dir.exists():
         for file in raw_dir.glob("*.csv"):
@@ -21,43 +20,12 @@ def cleanup_saved_data():
             except Exception as e:
                 logger.error(f"Failed to remove {file}: {e}")
 
-# Register cleanup function
 atexit.register(cleanup_saved_data)
 
-# Page Styling
+# Styling
 st.set_page_config(page_title="Upload Dataset", layout="wide")
-st.markdown(
-    """
+st.markdown("""
     <style>
-        body {
-            background-color: #FAFAFA; /* Changed to a very light gray */
-        }
-        .stApp {
-            background-color: #FAFAFA;
-        }
-        .stSidebar {
-            background-color: #F2F2F2; /* Light gray for sidebar */
-        }
-        .stSidebar > div:first-child {
-            background-color: #DDEAF6; /* Softer blue for top sidebar */
-        }
-        h1, h2, h3, .stMarkdown h1 {
-            color: #2C3E50; /* Dark slate for headings */
-        }
-        .stButton > button {
-            background-color: #F2F2F2;
-            color: #2C3E50;
-            font-weight: 600;
-            border: none;
-            border-radius: 6px;
-            padding: 0.6rem 1.2rem;
-            transition: all 0.3s ease;
-        }
-        .stButton > button:hover {
-            background-color: #2C3E50;
-            color: #ffffff;
-            transform: scale(1.02);
-        }
         .upload-section {
             text-align: center;
             margin-top: 20px;
@@ -79,18 +47,14 @@ st.markdown(
             padding: 1rem;
         }
     </style>
-    """,
-    unsafe_allow_html=True
-)
+""", unsafe_allow_html=True)
 
 def ensure_raw_directory():
-    """Ensure the raw data directory exists"""
     raw_dir = Path("data/01_raw")
     raw_dir.mkdir(parents=True, exist_ok=True)
     return raw_dir
 
 def save_raw_dataset(df, filename=None):
-    """Save raw dataset with timestamp"""
     raw_dir = ensure_raw_directory()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = filename or f"raw_data_{timestamp}.csv"
@@ -103,51 +67,85 @@ def save_raw_dataset(df, filename=None):
         logger.error(f"Failed to save raw data: {e}")
         raise
 
-# Custom Upload Heading UI
+# Upload Section Header
 st.markdown('<div class="upload-section">', unsafe_allow_html=True)
 st.markdown('<div class="upload-header">📂 Upload Your Dataset</div>', unsafe_allow_html=True)
 st.markdown('<div class="upload-subtext">Drag and drop your file here or click to browse</div>', unsafe_allow_html=True)
 st.markdown('</div>', unsafe_allow_html=True)
 
-# Upload Interface
+# Call upload interface (DO NOT store in a variable)
 data_upload_interface()
 
-# After Upload Processing
+# Post-upload block
 if 'raw_df' in st.session_state and st.session_state['raw_df'] is not None:
-    # Save the raw dataset
-    try:
-        saved_path = save_raw_dataset(st.session_state['raw_df'])
-        st.session_state['raw_data_path'] = str(saved_path)
-        st.sidebar.success(f"✅ Dataset saved to: {saved_path}")
-        st.sidebar.info("ℹ️ All saved datasets will be automatically removed when you close the app")
-    except Exception as e:
-        st.sidebar.error(f"⚠️ Failed to save raw data: {str(e)}")
-    
-    # Maintain existing functionality
-    st.session_state['raw1_df'] = st.session_state['raw_df']
-    
-    # Dataset Preview
+    raw_df = st.session_state['raw_df']
+
+    # Column Exclusion UI
     with st.container():
         st.markdown('<div class="uploaded-df">', unsafe_allow_html=True)
         st.write("**Columns Detected:**")
-        st.table(pd.DataFrame(st.session_state['raw_df'].columns, columns=["Column Name"]))
+        st.table(pd.DataFrame(raw_df.columns, columns=["Column Name"]))
+
+        st.subheader("🛑 Select Columns to Exclude from EDA and Preprocessing")
+        exclude_cols = st.multiselect(
+            "Choose the columns you want to skip:",
+            options=raw_df.columns.tolist(),
+            default=st.session_state.get('exclude_columns', []),
+            key='column_exclusion_selector'
+        )
+
+        # Update session and filter data
+        st.session_state['exclude_columns'] = exclude_cols
+        filtered_df = raw_df.drop(columns=exclude_cols) if exclude_cols else raw_df.copy()
+        st.session_state['raw1_df'] = filtered_df
+
+        # Feedback
+        st.info(f"Excluded Columns: {', '.join(exclude_cols) if exclude_cols else 'None'}")
+        st.write(f"**Remaining Columns:** {len(filtered_df.columns)}")
+        st.write("**Filtered Dataset Preview:**")
+        st.dataframe(filtered_df.head())
         st.markdown('</div>', unsafe_allow_html=True)
-        
-        # Optional Save Options
-        with st.expander("🔧 Advanced Save Options", expanded=False):
-            custom_name = st.text_input(
-                "Custom filename (without extension)", 
-                value=f"dataset_{datetime.now().strftime('%Y%m%d')}"
-            )
-            if st.button("💾 Save with custom name"):
+
+    # Save Options
+    with st.expander("💾 Save Options", expanded=True):
+        col1, col2 = st.columns(2)
+
+        with col1:
+            if st.button("Save Original Dataset"):
                 try:
-                    custom_path = save_raw_dataset(
-                        st.session_state['raw_df'],
-                        f"{custom_name}.csv"
-                    )
-                    st.success(f"Dataset saved as: {custom_path}")
+                    saved_path = save_raw_dataset(raw_df)
+                    st.success(f"✅ Full dataset saved to: {saved_path}")
                 except Exception as e:
                     st.error(f"Save failed: {str(e)}")
+
+        with col2:
+            if st.button("Save Filtered Dataset"):
+                try:
+                    saved_path = save_raw_dataset(
+                        filtered_df,
+                        f"filtered_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+                    )
+                    st.success(f"✅ Filtered dataset saved to: {saved_path}")
+                except Exception as e:
+                    st.error(f"Save failed: {str(e)}")
+
+        custom_name = st.text_input(
+            "Custom filename (without extension)",
+            value=f"dataset_{datetime.now().strftime('%Y%m%d')}"
+        )
+        if st.button("💾 Save with Custom Name"):
+            try:
+                save_path = save_raw_dataset(
+                    filtered_df,
+                    f"{custom_name}.csv"
+                )
+                st.success(f"✅ Dataset saved as: {save_path}")
+            except Exception as e:
+                st.error(f"Save failed: {str(e)}")
+
+    st.sidebar.success("✅ Dataset ready for analysis!")
+    st.sidebar.info(f"📊 Columns available: {len(filtered_df.columns)}")
+
 else:
     st.sidebar.warning("⚠️ No dataset found.")
     st.info("Please upload a dataset to begin analysis.")

@@ -1,4 +1,4 @@
-#!/home/ippala001/Logistic_regression_main/bin/python3
+#!/home/hari/Logistic_regression_main/bin/python3
 
 ##############################################################################
 #

@@ -3,8 +3,10 @@ import pandas as pd
 import numpy as np
 import pickle
 import joblib
+import shutil
 from io import BytesIO
 import os
+import json
 from datetime import datetime
 import matplotlib.pyplot as plt
 from sklearn.linear_model import LogisticRegression
@@ -13,12 +15,6 @@ from sklearn.metrics import accuracy_score, classification_report, confusion_mat
 from src.interfaces.streamlit_app.components.visualization import display_eda
 from src.utils.logging import logger
 from src.config.settings import AppSettings
-
-import torch
-import onnx
-import torch.nn as nn
-import torch.onnx
-import tensorflow as tf
 from sklearn.base import BaseEstimator
 from imblearn.over_sampling import SMOTE
 
@@ -36,7 +32,11 @@ else:
 # EDA 2: Preprocessed Data
 st.subheader("🧪 EDA2: Preprocessed Data")
 if 'raw2_df' in st.session_state and not st.session_state['raw2_df'].empty:
-    display_eda(st.session_state['raw2_df'], title_suffix="(Processed)", key_prefix="eda_processed")
+    processed_df = st.session_state['raw2_df']
+    excluded_cols = st.session_state.get('excluded_columns', [])
+    if excluded_cols:
+        processed_df = processed_df.drop(columns=excluded_cols, errors='ignore')
+    display_eda(processed_df, title_suffix="(Processed)", key_prefix="eda_processed")
 else:
     st.warning("Preprocessed dataset not found. Please complete preprocessing first.")
 
@@ -46,10 +46,8 @@ if 'raw_df' in st.session_state and 'raw2_df' in st.session_state:
     with st.expander("Compare Raw vs Preprocessed Summary", expanded=False):
         raw_summary = st.session_state['raw_df'].describe(include='all')
         preprocessed_summary = st.session_state['raw2_df'].describe(include='all')
-
         st.write("**Raw Data Summary:**")
         st.dataframe(raw_summary)
-
         st.write("**Preprocessed Data Summary:**")
         st.dataframe(preprocessed_summary)
 
@@ -64,75 +62,19 @@ def train_logistic_regression(X, y):
     model.fit(X, y)
     return model
 
-# Save model in various formats
-def save_model_formats(model: BaseEstimator, X_sample: pd.DataFrame, model_name: str = "logistic_model"):
-    model_dir = os.path.join("src", "models")
-    os.makedirs(model_dir, exist_ok=True)
+# Fixed model directory
+FIXED_MODEL_DIR = "src/models/Trained_model"
+os.makedirs(FIXED_MODEL_DIR, exist_ok=True)
+st.session_state["session_model_dir"] = FIXED_MODEL_DIR
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    model_name_versioned = f"{model_name}_{timestamp}"
-
-    results = {}
-
-    try:
-        with open(os.path.join(model_dir, f"{model_name_versioned}.pkl"), "wb") as f:
-            pickle.dump(model, f)
-        results['Pickle'] = os.path.join(model_dir, f"{model_name_versioned}.pkl")
-    except Exception as e:
-        results['Pickle'] = f"❌ Failed: {e}"
-
-    try:
-        joblib_path = os.path.join(model_dir, f"{model_name_versioned}.joblib")
-        joblib.dump(model, joblib_path)
-        results['Joblib'] = joblib_path
-    except Exception as e:
-        results['Joblib'] = f"❌ Failed: {e}"
-
-    try:
-        from skl2onnx import convert_sklearn
-        from skl2onnx.common.data_types import FloatTensorType
-        initial_type = [("float_input", FloatTensorType([None, X_sample.shape[1]]))]
-        onnx_model = convert_sklearn(model, initial_types=initial_type)
-        onnx_path = os.path.join(model_dir, f"{model_name_versioned}.onnx")
-        with open(onnx_path, "wb") as f:
-            f.write(onnx_model.SerializeToString())
-        results['ONNX'] = onnx_path
-    except Exception as e:
-        results['ONNX'] = f"❌ Failed: {e}"
-
-    try:
-        keras_model = tf.keras.Sequential([
-            tf.keras.layers.Dense(1, input_shape=(X_sample.shape[1],), activation='sigmoid')
-        ])
-        keras_model.compile(optimizer='adam', loss='binary_crossentropy')
-        tf_path = os.path.join(model_dir, f"{model_name_versioned}.h5")
-        keras_model.save(tf_path)
-        results['TensorFlow (H5)'] = tf_path
-    except Exception as e:
-        results['TensorFlow (H5)'] = f"❌ Failed: {e}"
-
-    try:
-        class DummyTorchModel(nn.Module):
-            def __init__(self, input_dim):
-                super().__init__()
-                self.linear = nn.Linear(input_dim, 1)
-            def forward(self, x):
-                return torch.sigmoid(self.linear(x))
-
-        torch_model = DummyTorchModel(X_sample.shape[1])
-        dummy_input = torch.randn(1, X_sample.shape[1])
-        torch_path = os.path.join(model_dir, f"{model_name_versioned}.pt")
-        torch.save(torch_model.state_dict(), torch_path)
-        results['PyTorch'] = torch_path
-    except Exception as e:
-        results['PyTorch'] = f"❌ Failed: {e}"
-
-    return results, model_name_versioned
-
-# Train & Save Section
-st.subheader("🧐 Train Model on Preprocessed Data")
+# --------------------------- TRAINING SECTION ---------------------------
+st.subheader("🤔 Train Model on Preprocessed Data")
 if 'raw2_df' in st.session_state and st.session_state['raw2_df'] is not None:
     raw2_df = st.session_state['raw2_df']
+    excluded_cols = st.session_state.get('excluded_columns', [])
+    raw2_df = raw2_df.drop(columns=excluded_cols, errors='ignore')
+    st.session_state['raw2_df'] = raw2_df
+
     target_col = st.session_state.get('selected_target', raw2_df.columns[0])
     if st.button("Train Model", key="btn_train_model"):
         try:
@@ -176,13 +118,7 @@ if 'raw2_df' in st.session_state and st.session_state['raw2_df'] is not None:
             st.write(f"📌 Best Threshold (Max F1): `{optimal_threshold_f1:.2f}`")
 
             auto_choice = st.radio("Select auto-threshold strategy to apply:", options=["Manual", "YoudenJ", "MaxF1"], index=0)
-
-            if auto_choice == "YoudenJ":
-                threshold = optimal_threshold_j
-            elif auto_choice == "MaxF1":
-                threshold = optimal_threshold_f1
-            else:
-                threshold = st.slider("Select classification threshold", 0.0, 1.0, 0.5, 0.01)
+            threshold = optimal_threshold_j if auto_choice == "YoudenJ" else optimal_threshold_f1 if auto_choice == "MaxF1" else st.slider("Select classification threshold", 0.0, 1.0, 0.5, 0.01)
 
             y_pred_thresh = (y_probs >= threshold).astype(int)
 
@@ -198,64 +134,81 @@ if 'raw2_df' in st.session_state and st.session_state['raw2_df'] is not None:
 
             st.subheader("📉 Confusion Matrix")
             fig, ax = plt.subplots(figsize=(1, 1))
-            disp = ConfusionMatrixDisplay.from_predictions(y_test, y_pred_thresh, ax=ax)
-            ax.set_title("Confusion Matrix", fontsize=7)
-            ax.set_xlabel("Predicted Label", fontsize=5)
-            ax.set_ylabel("True Label", fontsize=5)
+            ConfusionMatrixDisplay.from_predictions(y_test, y_pred_thresh, ax=ax)
             st.pyplot(fig)
 
             st.subheader("📈 ROC Curve")
-            roc_auc = auc(fpr, tpr)
             fig, ax = plt.subplots(figsize=(1, 1))
-            ax.plot(fpr, tpr, label=f"AUC = {roc_auc:.2f}")
+            ax.plot(fpr, tpr, label=f"AUC = {auc(fpr, tpr):.2f}")
             ax.plot([0, 1], [0, 1], "k--")
-            ax.set_xlabel("False Positive Rate", fontsize=5)
-            ax.set_ylabel("True Positive Rate", fontsize=5)
-            ax.set_title("ROC Curve", fontsize=7)
             ax.legend(loc="lower right", fontsize=5)
             st.pyplot(fig)
 
-            st.subheader("📈 Precision-Recall Curve")
+            st.subheader("📊 Precision-Recall Curve")
             fig, ax = plt.subplots(figsize=(1, 1))
             ax.plot(recall, precision)
-            ax.set_xlabel("Recall", fontsize=5)
-            ax.set_ylabel("Precision", fontsize=5)
-            ax.set_title("Precision-Recall Curve", fontsize=7)
             st.pyplot(fig)
 
-            params_df = pd.DataFrame({
-                'Parameter': model.get_params().keys(),
-                'Value': model.get_params().values()
-            })
-            st.subheader("🔧 Model Parameters")
-            st.dataframe(params_df)
-
+            # ✅ Save model and training info
             st.session_state["trained_model"] = model
             st.session_state["model_input_sample"] = X_train.head(1)
             st.session_state["model_accuracy"] = acc
+            st.session_state["X_train"] = X_train
+            st.session_state["final_preprocessor"] = None  # Update if you have a pipeline
 
         except Exception as e:
             st.error(f"Model training failed: {e}")
+# -------------------- SAVE TRAINED MODEL ONLY --------------------
+def save_model_artifacts(model):
+    artifacts_dir = "src/models/Trained_model"
+    os.makedirs(artifacts_dir, exist_ok=True)
 
-    if "trained_model" in st.session_state and st.button("Save Model in Multiple Formats", key="btn_save_model"):
+    model_path = os.path.join(
+        artifacts_dir,
+        f"model_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pkl"
+    )
+    with open(model_path, "wb") as f:
+        pickle.dump(model, f)
+
+    return model_path
+
+# ------------------------ SAVE TRIGGER ------------------------
+# ------------------------ SAVE TRIGGER ------------------------
+if "trained_model" in st.session_state:
+    st.subheader("📅 Save Trained Model")
+
+    if st.button("Save Model", key="btn_save_model"):
         try:
-            results, model_tag = save_model_formats(
-                st.session_state["trained_model"],
-                st.session_state["model_input_sample"]
-            )
+            model = st.session_state["trained_model"]
+            X_train = st.session_state.get("X_train")
 
-            metadata = {
-                "trained_on": datetime.now().isoformat(),
-                "accuracy": st.session_state["model_accuracy"],
-                "params": st.session_state["trained_model"].get_params(),
-                "exports": results
-            }
+            if X_train is None:
+                st.warning("Missing training data. Cannot save.")
+                st.stop()
 
-            st.success("✅ Model saved in multiple formats:")
-            st.table(pd.DataFrame(list(results.items()), columns=["Format", "Path/Status"]))
-            st.json(metadata)
+            st.warning("No preprocessor found. Saving model only.")
+
+            model_path = save_model_artifacts(model)
+
+            st.success("✅ Model saved successfully.")
+            st.json({
+                "model_path": model_path
+            })
+
+            # Clear session state
+            del st.session_state["trained_model"]
+            st.session_state.pop("model_input_sample", None)
+            st.session_state.pop("model_accuracy", None)
 
         except Exception as e:
-            st.error(f"Saving models failed: {e}")
-else:
-    st.warning("⚠️ No processed data found. Please run preprocessing first.")
+            st.error(f"❌ Saving model failed: {e}")
+
+# ------------------------ CLEANUP ------------------------
+if st.button("End Session and Clean Model Folder"):
+    try:
+        session_dir = st.session_state.get("session_model_dir", "")
+        shutil.rmtree(session_dir, ignore_errors=True)
+        st.success("🗑️ Session model directory cleaned up.")
+        st.session_state.pop("session_model_dir", None)
+    except Exception as e:
+        st.error(f"Cleanup failed: {e}")

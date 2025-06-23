@@ -1,0 +1,36 @@
+{
+  "features": [
+    {
+      "name": "Pregnancies",
+      "dtype": "int64"
+    },
+    {
+      "name": "Glucose",
+      "dtype": "int64"
+    },
+    {
+      "name": "BloodPressure",
+      "dtype": "int64"
+    },
+    {
+      "name": "SkinThickness",
+      "dtype": "int64"
+    },
+    {
+      "name": "Insulin",
+      "dtype": "int64"
+    },
+    {
+      "name": "BMI",
+      "dtype": "float64"
+    },
+    {
+      "name": "DiabetesPedigreeFunction",
+      "dtype": "float64"
+    },
+    {
+      "name": "Age",
+      "dtype": "int64"
+    }
+  ]
+}
