@@ -1,0 +1,32 @@
+{
+  "features": [
+    {
+      "name": "GRE Score",
+      "dtype": "int64"
+    },
+    {
+      "name": "TOEFL Score",
+      "dtype": "int64"
+    },
+    {
+      "name": "University Rating",
+      "dtype": "int64"
+    },
+    {
+      "name": "SOP",
+      "dtype": "float64"
+    },
+    {
+      "name": "LOR ",
+      "dtype": "float64"
+    },
+    {
+      "name": "CGPA",
+      "dtype": "float64"
+    },
+    {
+      "name": "Research",
+      "dtype": "int64"
+    }
+  ]
+}

@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 # Streamlit Page Config
 st.set_page_config(page_title="Logistic Regression Inference", layout="centered")
-st.title("🔍 Predict Using Logistic Regression Model")
+st.title("\U0001F50D Predict Using Logistic Regression Model")
 
 # Define Paths
 MODEL_DIR = Path("/home/hari/Logistic_regression_main/src/models/Trained_model")
@@ -38,9 +38,9 @@ model_file = get_latest_file(MODEL_DIR, ["joblib", "pkl"])
 pipeline_file = get_latest_file(PIPELINE_DIR, ["joblib", "pkl"])
 schema_file = get_latest_file(SCHEMA_DIR, ["json"])
 
-st.write("🧠 Model file found:", model_file)
-st.write("🔧 Pipeline file found:", pipeline_file)
-st.write("📄 Raw Schema file found:", schema_file)
+st.write("\U0001F9E0 Model file found:", model_file)
+st.write("⚖️ Pipeline file found:", pipeline_file)
+st.write("\U0001F4C4 Raw Schema file found:", schema_file)
 
 if not model_file or not pipeline_file or not schema_file:
     st.error("❌ Missing model, pipeline, or raw schema.")
@@ -83,12 +83,7 @@ def align_features_with_schema(df: pd.DataFrame, expected_schema: list) -> pd.Da
     for feature in feature_names:
         if feature not in df.columns:
             dtype = next((f["dtype"] for f in expected_schema if f["name"] == feature), "float64")
-            if dtype in ["int64", "int32"]:
-                df[feature] = 0
-            elif dtype == "bool":
-                df[feature] = False
-            else:
-                df[feature] = 0.0
+            df[feature] = 0 if dtype in ["int64", "int32"] else 0.0 if dtype == "float64" else False
     df = df[feature_names]
     for feature in feature_names:
         dtype = next((f["dtype"] for f in expected_schema if f["name"] == feature), "float64")
@@ -102,12 +97,12 @@ def align_features_with_schema(df: pd.DataFrame, expected_schema: list) -> pd.Da
         except Exception as e:
             st.error(f"Failed to convert feature {feature} to {dtype}")
             raise
+    df = df.fillna(0)
     return df
 
 # UI: Mode selection
 mode = st.radio("Choose prediction mode:", ["Single Instance Input", "Bulk Dataset Upload"])
 
-# Feature UI
 def get_feature_input():
     inputs = {}
     for feature in FEATURES:
@@ -123,21 +118,23 @@ def get_feature_input():
 # SINGLE INSTANCE
 if mode == "Single Instance Input":
     with st.form("prediction_form"):
-        st.subheader("✍️ Enter Feature Values")
+        st.subheader("\u270D️ Enter Feature Values")
         user_input = get_feature_input()
         submit = st.form_submit_button("Predict")
 
     if submit:
         try:
-            with st.spinner("🔄 Running Prediction..."):
+            with st.spinner("\U0001F501 Running Prediction..."):
                 input_df = pd.DataFrame([user_input])
-                st.write("📄 Raw Input")
+                st.write("\U0001F4C4 Raw Input")
                 st.dataframe(input_df)
 
                 aligned_input = align_features_with_schema(input_df, schema)
                 transformed = pipeline.transform(aligned_input)
 
                 processed_df = pd.DataFrame(transformed)
+                processed_df = processed_df.replace([np.inf, -np.inf], np.nan).fillna(0)
+
                 if len(processed_schema) != processed_df.shape[1]:
                     st.error("❌ Transformed feature count doesn't match processed schema.")
                     st.stop()
@@ -145,13 +142,15 @@ if mode == "Single Instance Input":
                 processed_df.columns = processed_schema
                 st.write("✅ Transformed Features")
                 st.dataframe(processed_df.head())
+                st.write("\U0001F50E NaN Check")
+                st.dataframe(processed_df.isna().sum())
 
                 prediction = model.predict(processed_df)[0]
                 proba = model.predict_proba(processed_df)[0] if hasattr(model, "predict_proba") else None
 
-            st.success(f"🎯 Prediction: `{prediction}`")
+            st.success(f"✨ Prediction: `{prediction}`")
             if proba is not None:
-                st.write("📊 Probabilities:")
+                st.write("\U0001F4CA Probabilities:")
                 st.dataframe(pd.DataFrame([proba], columns=model.classes_))
 
         except Exception as e:
@@ -161,20 +160,22 @@ if mode == "Single Instance Input":
 
 # BULK CSV
 elif mode == "Bulk Dataset Upload":
-    st.subheader("📂 Upload CSV File")
+    st.subheader("\U0001F4C2 Upload CSV File")
     file = st.file_uploader("Choose CSV", type=["csv"])
 
     if file:
         try:
-            with st.spinner("🔄 Processing file..."):
+            with st.spinner("\U0001F501 Processing file..."):
                 df = pd.read_csv(file)
-                st.write("📄 Input Sample")
+                st.write("\U0001F4C4 Input Sample")
                 st.dataframe(df.head())
 
                 aligned_df = align_features_with_schema(df, schema)
                 transformed = pipeline.transform(aligned_df)
 
                 processed_df = pd.DataFrame(transformed)
+                processed_df = processed_df.replace([np.inf, -np.inf], np.nan).fillna(0)
+
                 if len(processed_schema) != processed_df.shape[1]:
                     st.error("❌ Transformed feature count doesn't match processed schema.")
                     st.stop()
@@ -191,7 +192,7 @@ elif mode == "Bulk Dataset Upload":
                     for i, label in enumerate(model.classes_):
                         df_out[f"Prob_{label}"] = proba[:, i]
 
-            st.write("📈 Predictions")
+            st.write("\U0001F4C8 Predictions")
             st.dataframe(df_out.head())
 
             csv = df_out.to_csv(index=False).encode("utf-8")
@@ -208,7 +209,7 @@ elif mode == "Bulk Dataset Upload":
             st.code(traceback.format_exc())
 
 # Debug Info
-with st.expander("🔍 Debug Info"):
+with st.expander("\U0001F50D Debug Info"):
     st.write("### Model Type")
     st.write(type(model))
 
